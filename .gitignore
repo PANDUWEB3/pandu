@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 **/.env
+/smart-contract/.env
 backend/data/
 frontend/.env.local
 client_secret_*.apps.googleusercontent.com.json

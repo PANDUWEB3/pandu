@@ -3,7 +3,7 @@
 PANDU mencatat pemeriksaan batch, memisahkan pekerjaan QC dan QA, mengenkripsi dokumen bukti langsung di sisi klien (client-side AES-GCM), mengunggah ciphertext ke IPFS (Pinata), dan merekam komitmen bukti digital on-chain ke kontrak **PANDUQualityRegistry v2** di jaringan Arbitrum.
 
 > [!WARNING]
-> **INKOMPATIBILITAS ABI v1 & v2**: ABI v1 sama sekali tidak kompatibel dengan v2. Kontrak v2 mewajibkan penandatanganan EIP-712 oleh penerbit berlisensi (`ISSUER_ROLE`), pemisahan relayer tanpa gas untuk pengguna, fungsi `revokeProofWithSig` dengan `reasonHash`, serta pencegahan reentrancy dan pause guard. Deploy ulang kontrak v2 diperlukan sebelum produksi.
+> **ABI v1 dan v2 tidak kompatibel.** Kontrak v2 aktif di [Arbiscan Sepolia](https://sepolia.arbiscan.io/address/0x2e6aE365874D3b06dA896980D1CFc817Be873EE9) (chain 421614) dan mewajibkan tanda tangan EIP-712 dari penerbit ber-role `ISSUER_ROLE`. Kontrak v1 `0x205a0463504FDC40812758edc59b2C6ad6813990` disimpan sebagai legacy hanya untuk membaca proof lama; proof v1 tidak memiliki tanda tangan penerbit. Status Sourcify: **match** untuk creation dan runtime. Verifikasi Arbiscan belum dikirim; API mengembalikan `Missing/Invalid API Key`, sehingga status source Arbiscan belum terkonfirmasi dalam pemeriksaan ini.
 
 ---
 
@@ -72,10 +72,13 @@ ARBITRUM_SEPOLIA_RPC_URL=https://sepolia-rollup.arbitrum.io/rpc
 ARBITRUM_ONE_RPC_URL=https://arb1.arbitrum.io/rpc
 
 # Kontrak & Role PANDUQualityRegistry v2
-PANDU_REGISTRY_ADDRESS=0xAlamatKontrakSetelahDeploy
+PANDU_REGISTRY_ADDRESS=0x2e6aE365874D3b06dA896980D1CFc817Be873EE9
+PANDU_LEGACY_REGISTRY_ADDRESS=0x205a0463504FDC40812758edc59b2C6ad6813990
+DEPLOYER_PRIVATE_KEY=0xPrivateKeyWalletDeploy
 RELAYER_PRIVATE_KEY=0xPrivateKeyRelayerUntukKirimTx
 ADMIN_MULTISIG_ADDRESS=0xAlamatMultisigAdmin
 ISSUER_ADDRESS=0xAlamatPenerbitQAYangDiberiIssuerRole
+INITIAL_RELAYER=0xAlamatWalletRelayer
 
 # Pinata IPFS (Server-Only JWT)
 PINATA_JWT=ey...
@@ -113,15 +116,16 @@ forge coverage
 
 ### 2. Deploy ke Arbitrum Sepolia
 ```powershell
-forge script script/Deploy.s.sol:Deploy --rpc-url $ARBITRUM_SEPOLIA_RPC_URL --broadcast --verify
+forge script script/Deploy.s.sol:Deploy --rpc-url $ARBITRUM_SEPOLIA_RPC_URL --broadcast --verify --verifier sourcify
 ```
-Catat alamat kontrak yang dihasilkan, lalu masukkan ke `PANDU_REGISTRY_ADDRESS` di `backend/.env` dan `smart-contract/deployment.json`.
+Kontrak v2 yang aktif sudah di-deploy pada `0x2e6aE365874D3b06dA896980D1CFc817Be873EE9`; jangan deploy ulang untuk migrasi ini. Source tercatat sebagai `match` di Sourcify. Verifikasi Arbiscan belum dikirim karena `ETHERSCAN_API_KEY` lokal kosong, dan statusnya belum dapat diperiksa lewat API (`Missing/Invalid API Key`). Konfigurasi aktif menggunakan alamat v2; alamat v1 hanya ada di `PANDU_LEGACY_REGISTRY_ADDRESS` dan bagian `legacy` di `smart-contract/deployment.json` untuk membaca proof lama. Jangan menandai proof v1 sebagai terverifikasi karena anchor v1 tidak memeriksa tanda tangan penerbit.
 
 ### 3. Memberikan Role (Grant Roles)
 Jalankan skrip grant role untuk memberikan `ISSUER_ROLE` kepada QA dan `PAUSER_ROLE` kepada tim operasi/multisig:
 ```powershell
-forge script script/GrantRoles.s.sol:GrantRoles --rpc-url $ARBITRUM_SEPOLIA_RPC_URL --broadcast
+forge script script/GrantRoles.s.sol:GrantRoles -vvv
 ```
+Skrip ini hanya mencetak calldata. Eksekusi `grantRole(ISSUER_ROLE, ISSUER_ADDRESS)` dari akun admin pada kontrak v2 setelah memeriksa target dan alamat penerbit.
 
 ---
 

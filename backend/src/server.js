@@ -14,6 +14,7 @@ import { z } from 'zod';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+app.set('trust proxy', process.env.TRUST_PROXY || 1);
 const port = Number(process.env.PORT || 8787);
 const dataFile = path.resolve(__dirname, '..', process.env.DATA_FILE || './data/demo-state.json');
 const uploadDir = path.resolve(__dirname, '..', process.env.UPLOAD_DIR || './data/uploads');
@@ -91,7 +92,9 @@ const CreateProofBodySchema = z.object({
   inspectionId: z.string().uuid('ID inspeksi harus berupa UUID valid'),
   evidence: z.array(z.object({
     cid: z.string().min(1),
-    sha256: z.string().min(1),
+    sha256: z.string().optional(),
+    hmac: z.string().optional(),
+    salt: z.string().optional(),
   })).optional(),
 });
 
@@ -260,17 +263,80 @@ async function sendWithRetry(txFn, label = 'transaksi', maxRetries = 3) {
   throw lastError;
 }
 
-// Simple in-memory rate limiter untuk endpoint relayer sensitif
-const _rlMap = new Map();
-function checkRateLimit(key, limitPerMinute = 10) {
-  const now = Date.now();
-  const entry = _rlMap.get(key) || { count: 0, resetAt: now + 60_000 };
-  if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + 60_000; }
-  entry.count += 1;
-  _rlMap.set(key, entry);
-  return entry.count <= limitPerMinute;
+// Rate Limiter: In-Memory dengan TTL Cleanup + Adapter Redis opsional via REDIS_URL
+function getClientIp(req) {
+  return req.ip || req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket?.remoteAddress || '127.0.0.1';
 }
-setInterval(() => { const now = Date.now(); for (const [k, v] of _rlMap) { if (now > v.resetAt) _rlMap.delete(k); } }, 3_600_000);
+
+class RateLimiter {
+  constructor() {
+    this.memoryMap = new Map();
+    this.redis = null;
+    this.initCleanup();
+    this.initRedis();
+  }
+
+  initCleanup() {
+    // TTL Cleanup: timer periodik membersihkan entri kedaluwarsa tanpa memblokir event loop
+    const timer = setInterval(() => {
+      const now = Date.now();
+      for (const [key, entry] of this.memoryMap.entries()) {
+        if (now > entry.resetAt) {
+          this.memoryMap.delete(key);
+        }
+      }
+    }, 30_000);
+    timer.unref();
+  }
+
+  async initRedis() {
+    if (process.env.REDIS_URL) {
+      try {
+        const { default: Redis } = await import('ioredis');
+        this.redis = new Redis(process.env.REDIS_URL, {
+          lazyConnect: true,
+          maxRetriesPerRequest: 1,
+          connectTimeout: 3000,
+        });
+        await this.redis.connect();
+        console.log('[RateLimiter] Terhubung ke Redis untuk rate limiting terdistribusi.');
+      } catch (err) {
+        console.warn('[RateLimiter] Gagal koneksi Redis, fallback ke in-memory lokal:', err.message);
+        this.redis = null;
+      }
+    }
+  }
+
+  async check(key, limit = 10, windowMs = 60_000) {
+    if (this.redis && this.redis.status === 'ready') {
+      try {
+        const redisKey = `pandu:rl:${key}`;
+        const count = await this.redis.incr(redisKey);
+        if (count === 1) {
+          await this.redis.pexpire(redisKey, windowMs);
+        }
+        return count <= limit;
+      } catch (err) {
+        console.warn('[RateLimiter] Redis error, fallback ke in-memory:', err.message);
+      }
+    }
+
+    const now = Date.now();
+    const entry = this.memoryMap.get(key) || { count: 0, resetAt: now + windowMs };
+    if (now > entry.resetAt) {
+      entry.count = 0;
+      entry.resetAt = now + windowMs;
+    }
+    entry.count += 1;
+    this.memoryMap.set(key, entry);
+    return entry.count <= limit;
+  }
+}
+
+const rateLimiter = new RateLimiter();
+async function checkRateLimit(key, limitPerMinute = 10) {
+  return await rateLimiter.check(key, limitPerMinute, 60_000);
+}
 
 function buildPublicProof(source = state) {
   if (!source.proof) throw new Error('Buat bukti PANDU terlebih dahulu.');
@@ -367,13 +433,9 @@ app.post('/api/wallet/link/verify', requireSupabaseUser, async (req, res) => {
 });
 
 function hexBytes32(value) { return `\\x${String(value).replace(/^0x/, '')}`; }
-function sha256Hex(value) { return createHash('sha256').update(Buffer.from(value)).digest('hex'); }
-function bytes32Hex(value) { return typeof value === 'string' ? value.replace(/^\\x/, '').replace(/^0x/, '') : Buffer.from(value).toString('hex'); }
-function canonicalJson(value) {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
-}
+export { canonicalJson, sha256Hex, computeCanonicalEvidenceHash } from './canonical.js';
+import { canonicalJson, sha256Hex, computeCanonicalEvidenceHash } from './canonical.js';
+export function bytes32Hex(value) { return typeof value === 'string' ? value.replace(/^\\x/, '').replace(/^0x/, '') : Buffer.from(value).toString('hex'); }
 async function requireOrgRole(userId, orgId, roles) {
   const { data, error } = await supabaseAdmin.from('organization_members').select('role').eq('organization_id', orgId).eq('user_id', userId).eq('status', 'active').maybeSingle();
   if (error) throw error;
@@ -487,8 +549,15 @@ app.post('/api/organizations/:orgId/proofs', requireSupabaseUser, async (req, re
     const { inspectionId, evidence } = parsed.data;
     let evidenceItems = evidence;
     if (!evidenceItems || !evidenceItems.length) {
-      const { data: dbFiles } = await supabaseAdmin.from('evidence_files').select('cid,sha256').eq('organization_id', orgId).eq('inspection_id', inspectionId);
-      evidenceItems = dbFiles || [];
+      const { data: dbFiles } = await supabaseAdmin.from('evidence_files').select('cid,sha256,original_name').eq('organization_id', orgId).eq('inspection_id', inspectionId);
+      evidenceItems = (dbFiles || []).map((f) => {
+        const saltMatch = f.original_name?.match(/#salt=([a-fA-F0-9]{64})/);
+        return {
+          cid: f.cid,
+          hmac: String(f.sha256 || '').replace(/^\\x/, ''),
+          salt: saltMatch ? saltMatch[1] : randomBytes(32).toString('hex')
+        };
+      });
     }
     const { inspection, batch, material, supplier } = await getBatchDetails(orgId, inspectionId);
     if (inspection.status !== 'approved' || inspection.result_summary?.result !== 'PASS') return res.status(409).json({ error: 'Bukti hanya dapat dibuat dari inspeksi PASS yang sudah disetujui QA.' });
@@ -505,7 +574,11 @@ app.post('/api/organizations/:orgId/proofs', requireSupabaseUser, async (req, re
       material,
       supplier,
       inspection: { checks: inspection.result_summary.checks, result: inspection.result_summary.result },
-      evidence: evidenceItems.map((item) => ({ cid: item.cid, sha256: String(item.sha256).replace(/^\\x/, '') })).sort((a, b) => a.cid.localeCompare(b.cid)),
+      evidence: evidenceItems.map((item) => ({
+        cid: item.cid,
+        hmac: item.hmac || String(item.sha256 || '').replace(/^\\x/, ''),
+        salt: item.salt || randomBytes(32).toString('hex'),
+      })).sort((a, b) => a.cid.localeCompare(b.cid)),
       salt,
       approvedAt: inspection.reviewed_at,
     };
@@ -549,7 +622,8 @@ app.get('/api/proofs/:proofRowId/sign-payload', requireSupabaseUser, async (req,
       domain,
       proofId: proofIdBytes(proof.public_id),
       batchRef: dbBatchRef(proof.organization_id, batch.batch_code),
-      evidenceHash: `0x${bytes32Hex(proof.commitment)}`
+      evidenceHash: `0x${bytes32Hex(proof.commitment)}`,
+      snapshot: proof.public_snapshot,
     });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
@@ -582,7 +656,19 @@ app.post('/api/proofs/:proofRowId/anchor', requireSupabaseUser, async (req, res)
     const parsed = AnchorBodySchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Tanda tangan EIP-712 penerbit (signature, attester, deadline) diperlukan.' });
     const { signature, attester, deadline } = parsed.data;
-    if (!checkRateLimit(`anchor:${req.authUser.id}`)) return res.status(429).json({ error: 'Terlalu banyak permintaan. Coba lagi nanti.' });
+
+    // Batasi deadline tanda tangan maksimal 15 menit dari waktu sekarang
+    const now = Math.floor(Date.now() / 1000);
+    const deadlineNum = Number(deadline);
+    if (deadlineNum < now) {
+      return res.status(400).json({ error: 'Tanda tangan sudah kedaluwarsa (deadline telah lewat).' });
+    }
+    const MAX_DEADLINE_SECONDS = 15 * 60; // 15 menit
+    if (deadlineNum > now + MAX_DEADLINE_SECONDS + 60) {
+      return res.status(400).json({ error: 'Deadline tanda tangan maksimal 15 menit dari waktu saat ini.' });
+    }
+
+    if (!(await checkRateLimit(`anchor:${req.authUser.id}`))) return res.status(429).json({ error: 'Terlalu banyak permintaan. Coba lagi nanti.' });
 
     const { data, error } = await supabaseAdmin.from('quality_proofs').select('*').eq('id', req.params.proofRowId).maybeSingle();
     if (error) throw error;
@@ -631,7 +717,20 @@ app.post('/api/proofs/:proofRowId/revoke', requireSupabaseUser, async (req, res)
     const parsed = RevokeBodySchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Alasan revoke (reasonHash) diperlukan.' });
     const { reasonHash, signature, deadline } = parsed.data;
-    if (!checkRateLimit(`revoke:${req.authUser.id}`)) return res.status(429).json({ error: 'Terlalu banyak permintaan. Coba lagi nanti.' });
+
+    if (deadline) {
+      const now = Math.floor(Date.now() / 1000);
+      const deadlineNum = Number(deadline);
+      if (deadlineNum < now) {
+        return res.status(400).json({ error: 'Tanda tangan sudah kedaluwarsa (deadline telah lewat).' });
+      }
+      const MAX_DEADLINE_SECONDS = 15 * 60; // 15 menit
+      if (deadlineNum > now + MAX_DEADLINE_SECONDS + 60) {
+        return res.status(400).json({ error: 'Deadline tanda tangan maksimal 15 menit dari waktu saat ini.' });
+      }
+    }
+
+    if (!(await checkRateLimit(`revoke:${req.authUser.id}`))) return res.status(429).json({ error: 'Terlalu banyak permintaan. Coba lagi nanti.' });
 
     const { data: proof, error } = await supabaseAdmin.from('quality_proofs').select('*').eq('id', req.params.proofRowId).maybeSingle();
     if (error) throw error;
@@ -869,6 +968,15 @@ app.post('/api/anchor', async (_req, res) => {
     if (!signature || !attester || !deadline) {
       return res.status(400).json({ error: 'Pada kontrak v2, anchorProof memerlukan tanda tangan EIP-712 dari penerbit (attester, deadline, signature). Kunci penerbit tidak disimpan di server.' });
     }
+    const now = Math.floor(Date.now() / 1000);
+    const deadlineNum = Number(deadline);
+    if (deadlineNum < now) {
+      return res.status(400).json({ error: 'Tanda tangan sudah kedaluwarsa (deadline telah lewat).' });
+    }
+    const MAX_DEADLINE_SECONDS = 15 * 60;
+    if (deadlineNum > now + MAX_DEADLINE_SECONDS + 60) {
+      return res.status(400).json({ error: 'Deadline tanda tangan maksimal 15 menit dari waktu saat ini.' });
+    }
     const tx = await sendWithRetry(
       () => registry.anchorProof(proofId, batchRef, digest, attester, deadline, signature),
       'anchorProof'
@@ -901,6 +1009,17 @@ app.post('/api/revoke', async (req, res) => {
     const provider = getProvider(); const wallet = new Wallet(process.env.RELAYER_PRIVATE_KEY || '', provider);
     const registry = getRegistry(wallet);
     const { reasonHash, signature, deadline } = req.body || {};
+    if (deadline) {
+      const now = Math.floor(Date.now() / 1000);
+      const deadlineNum = Number(deadline);
+      if (deadlineNum < now) {
+        return res.status(400).json({ error: 'Tanda tangan sudah kedaluwarsa (deadline telah lewat).' });
+      }
+      const MAX_DEADLINE_SECONDS = 15 * 60;
+      if (deadlineNum > now + MAX_DEADLINE_SECONDS + 60) {
+        return res.status(400).json({ error: 'Deadline tanda tangan maksimal 15 menit dari waktu saat ini.' });
+      }
+    }
     const reason = reasonHash || id('Pencabutan bukti demo');
     let tx;
     if (signature && deadline) {

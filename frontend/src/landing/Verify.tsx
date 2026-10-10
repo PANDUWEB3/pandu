@@ -132,12 +132,56 @@ export function VerifyPublic() {
   );
 }
 
-type PublicResult = { status: string; message: string; proof?: any; network?: string; explorerUrl?: string; transactionHash?: string; anchoredAt?: number; blockNumber?: number | string; commitment?: string };
+type PublicResult = {
+  status: string;
+  message: string;
+  proof?: any;
+  network?: string;
+  explorerUrl?: string;
+  transactionHash?: string;
+  anchoredAt?: number;
+  blockNumber?: number | string;
+  commitment?: string;
+  attester?: string;
+  relayer?: string;
+  revokedAt?: number;
+  revoker?: string;
+  revokeReason?: string;
+};
 
 export function PublicProof({ token }: { token: string }) {
   const { t } = useI18n();
   const [result, setResult] = useState<PublicResult | null>(null);
   const [retry, setRetry] = useState(0);
+  const [fileMatchStatus, setFileMatchStatus] = useState<string | null>(null);
+  const [fileMatchTone, setFileMatchTone] = useState<string>('');
+
+  async function checkLocalFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const digestBuf = await crypto.subtle.digest('SHA-256', buf);
+      const hashArray = Array.from(new Uint8Array(digestBuf));
+      const hex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+      const evidenceList: any[] = result?.proof?.evidence || [];
+      const hashList: string[] = result?.proof?.evidenceHashes || [];
+      const matched = evidenceList.some((ev: any) => ev.sha256?.toLowerCase() === hex.toLowerCase()) ||
+                      hashList.some((h: string) => h.toLowerCase() === hex.toLowerCase());
+
+      if (matched) {
+        setFileMatchTone('bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-900/30');
+        setFileMatchStatus(`VALID: Hash berkas "${file.name}" (${hex.slice(0, 16)}...) cocok dengan komitmen on-chain!`);
+      } else {
+        setFileMatchTone('bg-red-50 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-900/30');
+        setFileMatchStatus(`MISMATCH: Hash berkas "${file.name}" (${hex.slice(0, 16)}...) tidak cocok dengan bukti ini.`);
+      }
+    } catch (err: any) {
+      setFileMatchTone('bg-red-50 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-900/30');
+      setFileMatchStatus(`Gagal menghitung hash: ${err.message}`);
+    }
+  }
 
   useEffect(() => { 
     let live = true; 
@@ -267,6 +311,27 @@ export function PublicProof({ token }: { token: string }) {
                       </div>
                     ))}
                   </dl>
+
+                  {/* Uji kecocokan berkas (dekripsi lokal) */}
+                  <div className="mt-8 pt-6 border-t border-black/5 dark:border-white/5">
+                    <h4 className="font-bold text-base mb-2 flex items-center gap-2 text-ink">
+                      <ShieldCheck size={18} className="text-brand" />
+                      Uji kecocokan berkas (dekripsi lokal)
+                    </h4>
+                    <p className="text-xs text-ink-soft mb-3 leading-relaxed">
+                      Pilih berkas dokumen/inspeksi hasil dekripsi untuk menghitung SHA-256 langsung di browser dan mencocokkannya dengan komitmen bukti.
+                    </p>
+                    <input
+                      type="file"
+                      onChange={checkLocalFile}
+                      className="block w-full text-xs text-ink-soft file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-brand/10 file:text-brand hover:file:bg-brand/20 cursor-pointer"
+                    />
+                    {fileMatchStatus && (
+                      <div className={`mt-3 p-3 rounded-xl text-xs font-medium border ${fileMatchTone}`}>
+                        {fileMatchStatus}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 

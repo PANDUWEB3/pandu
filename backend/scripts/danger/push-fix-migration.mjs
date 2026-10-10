@@ -14,20 +14,25 @@
  * - Try calling the Supabase Management API if SUPABASE_PAT is set
  * - Otherwise, try to use supabase-js to call a helper RPC
  * - Otherwise, print the SQL for manual application
+ *
+ * Rollback: use the verified, target-matched database backup and a separately reviewed
+ * recovery procedure. Remove temporary SQL helpers only after checking dependent objects.
  */
 
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { guardDangerScript } from './guard.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: resolve(__dirname, '../.env') });
+dotenv.config({ path: resolve(__dirname, '../../.env') });
+if (!await guardDangerScript({ scriptName: 'push-fix-migration', kind: 'supabase', destructive: true })) process.exit(process.exitCode || 0);
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY  = process.env.SUPABASE_SECRET_KEY;
 
-const migPath = resolve(__dirname, '../../supabase/migrations/202610090004_fix_prevent_tenant_move.sql');
+const migPath = resolve(__dirname, '../../../supabase/migrations/202610090004_fix_prevent_tenant_move.sql');
 const sql = readFileSync(migPath, 'utf8');
 
 // The service_role JWT IS a valid Postgres session via PostgREST.

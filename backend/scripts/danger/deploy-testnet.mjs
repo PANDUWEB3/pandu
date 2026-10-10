@@ -1,10 +1,22 @@
+/**
+ * Rollback: contracts are immutable; disable writes and record the address as retired.
+ * Recovery requires an explicitly reviewed replacement deployment and config cutover.
+ */
 import 'dotenv/config';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JsonRpcProvider, Wallet, Contract, ContractFactory } from 'ethers';
+import { guardDangerScript } from './guard.mjs';
 
-const backendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const mainnetInvocation = path.basename(process.argv[1] || '') === 'deploy-arbitrum-one.mjs';
+if (!mainnetInvocation && process.env.PANDU_CHAIN === 'arbitrum-one') {
+  console.error('Refusing mainnet target from deploy-testnet; use the guarded mainnet entry point.');
+  process.exit(2);
+}
+if (!await guardDangerScript({ scriptName: mainnetInvocation ? 'deploy-arbitrum-one' : 'deploy-testnet', kind: mainnetInvocation ? 'mainnet' : 'chain' })) process.exit(process.exitCode || 0);
+
+const backendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const rootDir = path.resolve(backendDir, '..');
 const artifactPath = path.join(rootDir, 'smart-contract', 'out', 'PANDUQualityRegistry.sol', 'PANDUQualityRegistry.json');
 const envPath = path.join(backendDir, '.env');
@@ -14,9 +26,6 @@ const chainLabel = chainName === 'arbitrum-one' ? 'Arbitrum One' : 'Arbitrum Sep
 const explorer = chainName === 'arbitrum-one' ? 'https://arbiscan.io' : 'https://sepolia.arbiscan.io';
 const rpcUrl = chainName === 'arbitrum-one' ? (process.env.ARBITRUM_ONE_RPC_URL || 'https://arb1.arbitrum.io/rpc') : (process.env.ARBITRUM_SEPOLIA_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc');
 if (!['arbitrum-sepolia', 'arbitrum-one'].includes(chainName)) throw new Error('PANDU_CHAIN harus arbitrum-sepolia atau arbitrum-one.');
-if (chainName === 'arbitrum-one' && (process.env.ENABLE_MAINNET_DEPLOYMENT !== 'true' || process.env.MAINNET_DEPLOY_CONFIRMATION !== 'I UNDERSTAND THIS USES REAL ETH')) {
-  throw new Error('Mainnet deploy dikunci. Set ENABLE_MAINNET_DEPLOYMENT=true dan MAINNET_DEPLOY_CONFIRMATION="I UNDERSTAND THIS USES REAL ETH" setelah audit dan persetujuan pemilik.');
-}
 if (chainName === 'arbitrum-one' && !process.env.DEPLOYER_PRIVATE_KEY) throw new Error('Mainnet deploy memerlukan DEPLOYER_PRIVATE_KEY terpisah dari wallet relayer.');
 if (!process.env.RELAYER_PRIVATE_KEY) throw new Error('RELAYER_PRIVATE_KEY tidak ada di backend/.env.');
 if (!process.env.PANDU_REGISTRY_ADDRESS) {

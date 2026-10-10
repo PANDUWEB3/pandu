@@ -8,14 +8,19 @@
  * Env vars read from backend/.env:
  *   SUPABASE_URL  — e.g. https://xxxx.supabase.co
  *   SUPABASE_SECRET_KEY (service-role key)
+ *
+ * Rollback: use the verified, target-matched backup supplied to the guard and a separately
+ * reviewed restore plan. Never auto-drop objects or retry a partially applied DDL file.
  */
 
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
+import { guardDangerScript } from './guard.mjs';
 
-dotenv.config({ path: resolve(import.meta.dirname, '../backend/.env') });
+dotenv.config({ path: resolve(import.meta.dirname, '../../.env') });
+if (!await guardDangerScript({ scriptName: 'apply-migration', kind: 'supabase', destructive: true })) process.exit(process.exitCode || 0);
 
 const url   = process.env.SUPABASE_URL;
 const key   = process.env.SUPABASE_SECRET_KEY;

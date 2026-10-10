@@ -8,8 +8,8 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "setup:testnet": "node scripts/setup-testnet.mjs",
-    "deploy:testnet": "node scripts/deploy-testnet.mjs",
-    "deploy:arbitrum-one": "node scripts/deploy-arbitrum-one.mjs"
+    "deploy:testnet": "node scripts/danger/deploy-testnet.mjs",
+    "deploy:arbitrum-one": "node scripts/danger/deploy-arbitrum-one.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.3",

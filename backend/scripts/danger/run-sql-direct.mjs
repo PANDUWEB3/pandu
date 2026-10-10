@@ -6,22 +6,27 @@
  *
  * Since supabase-js doesn't support raw SQL directly, we use
  * the REST endpoint for a "dummy" RPC that executes the SQL.
+ *
+ * Rollback: restore from the verified, target-matched backup with a separately reviewed
+ * recovery procedure. Arbitrary SQL is never automatically reversed.
  */
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
+import { guardDangerScript } from './guard.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: resolve(__dirname, '../.env') });
+dotenv.config({ path: resolve(__dirname, '../../.env') });
+if (!await guardDangerScript({ scriptName: 'run-sql-direct', kind: 'supabase', destructive: true })) process.exit(process.exitCode || 0);
 
 const url = process.env.SUPABASE_URL;
 const key = process.env.SUPABASE_SECRET_KEY;
 
 if (!url || !key) { console.error('Missing SUPABASE_URL or SUPABASE_SECRET_KEY'); process.exit(1); }
 
-const migPath = resolve(__dirname, '../../supabase/migrations/202610090004_fix_prevent_tenant_move.sql');
+const migPath = resolve(__dirname, '../../../supabase/migrations/202610090004_fix_prevent_tenant_move.sql');
 const sql = readFileSync(migPath, 'utf8');
 
 // Split into individual statements

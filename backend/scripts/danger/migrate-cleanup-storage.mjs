@@ -1,9 +1,16 @@
+/**
+ * Rollback: retain the verified pre-run backup outside this process. Restore deleted objects
+ * from that backup and verify each object's bytes/CID before exposing the bucket again.
+ */
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
+import { guardDangerScript } from './guard.mjs';
+
+if (!await guardDangerScript({ scriptName: 'migrate-cleanup-storage', kind: 'supabase', destructive: true })) process.exit(process.exitCode || 0);
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;

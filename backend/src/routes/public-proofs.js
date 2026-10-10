@@ -52,7 +52,7 @@ export function createPublicProofRouter({ supabaseAdmin, tokenSecret, legacyRegi
     }
     try {
       const query = supabaseAdmin.from('quality_proofs')
-        .select('public_id,anchor_status,commitment,chain_id,contract_address,transaction_hash');
+        .select('public_id,anchor_status,commitment,chain_id,contract_address,transaction_hash,merkle_version,disclosed_paths');
       const { data: proof, error } = await (byPublicId
         ? query.eq('public_id', token.toUpperCase())
         : query.eq('public_token_hash', databaseBytes32(tokenDigest(token)))).maybeSingle();

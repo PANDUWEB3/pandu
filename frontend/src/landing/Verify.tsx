@@ -5,6 +5,9 @@ import { useI18n } from '../i18n';
 import Navbar from './Navbar';
 import Footer from './Footer';
 import { verifyProofOnchain, type OnchainProofStatus } from '../onchain-verification';
+import { verifyDisclosurePackage } from '../merkle';
+import { parseMerkleDisclosureFragment } from '../merkle-disclosure-link';
+import { parseVerifierShareFragment } from '../verifier-share';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8787';
 
@@ -147,6 +150,8 @@ type PublicResult = {
   network: string;
   explorerUrl: string | null;
   onchain: OnchainProofStatus;
+  disclosed: Array<{ path: string; value: unknown }>;
+  disclosureValid: boolean | null;
 };
 
 export function PublicProof({ token }: { token: string }) {
@@ -183,6 +188,9 @@ export function PublicProof({ token }: { token: string }) {
           registryAddress: import.meta.env.VITE_PANDU_REGISTRY_ADDRESS || '0x2e6aE365874D3b06dA896980D1CFc817Be873EE9',
           legacyRegistryAddress,
         });
+        const sharePayload = parseVerifierShareFragment(window.location.hash);
+        const disclosure = sharePayload?.disclosure || parseMerkleDisclosureFragment(window.location.hash);
+        const disclosureValid = disclosure ? await verifyDisclosurePackage(disclosure, metadata.commitment) : null;
         const explorer = Number(metadata.chainId) === 42161 ? 'https://arbiscan.io' : 'https://sepolia.arbiscan.io';
         const status = onchain.status;
         const message = status === 'VERIFIED'
@@ -203,6 +211,8 @@ export function PublicProof({ token }: { token: string }) {
           network: Number(metadata.chainId) === 42161 ? 'Arbitrum One' : 'Arbitrum Sepolia',
           explorerUrl: metadata.transactionHash ? `${explorer}/tx/${metadata.transactionHash}` : null,
           onchain,
+          disclosed: disclosureValid && disclosure ? disclosure.disclosed.map(({ path, value }) => ({ path, value })) : [],
+          disclosureValid,
         });
       } catch (cause) {
         if (active) setError(cause instanceof Error ? cause.message : 'Pemeriksaan on-chain gagal.');
@@ -256,6 +266,14 @@ export function PublicProof({ token }: { token: string }) {
                 <p>Kecocokan evidenceHash: <strong>{result.onchain.commitmentMatches ? 'Cocok dengan commitment metadata' : 'Tidak cocok'}</strong></p>
                 <p>isValid(): <strong>{result.onchain.isValid === null ? 'Tidak tersedia di v1' : String(result.onchain.isValid)}</strong></p>
                 <p>verify(): <strong>{result.onchain.verify === null ? 'Tidak tersedia di v1' : String(result.onchain.verify)}</strong></p>
+              </section>
+              <section aria-label="Bukti selective disclosure" className="bg-canvas border border-black/5 dark:border-white/5 rounded-3xl p-6 shadow-sm space-y-3">
+                <h3 className="font-bold text-lg">Disclosure Merkle</h3>
+                {result.disclosureValid === false
+                  ? <p role="alert">Bukti field yang dibagikan tidak cocok dengan root on-chain.</p>
+                  : result.disclosed.length
+                    ? <><p>Field yang dipilih penerbit dan bukti Merkle cocok dengan commitment on-chain.</p><dl className="grid gap-3 text-sm">{result.disclosed.map((field) => <div key={field.path}><dt className="font-semibold text-ink-soft">{field.path}</dt><dd className="break-words">{typeof field.value === 'string' ? field.value : JSON.stringify(field.value)}</dd></div>)}</dl></>
+                    : <p>Tidak ada field bisnis yang dibagikan. Nilai dan salt tertutup tetap berada di fragmen tautan hanya saat penerbit memilih disclosure.</p>}
               </section>
               <section className="bg-canvas border border-black/5 dark:border-white/5 rounded-3xl p-6 shadow-sm space-y-4">
                 <h3 className="font-bold text-lg flex items-center gap-2"><FileSearch size={20} className="text-brand" />Metadata bukti</h3>

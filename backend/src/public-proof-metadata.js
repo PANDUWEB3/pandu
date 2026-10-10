@@ -10,6 +10,8 @@ export function publicProofMetadata(proof, { proofId, legacy, onchain = null }) 
     contractAddress: proof.contract_address,
     legacy: Boolean(legacy),
     commitment: `0x${commitment}`,
+    merkleVersion: proof.merkle_version || null,
+    disclosedPaths: Array.isArray(proof.disclosed_paths) ? proof.disclosed_paths : [],
     attester: onchain?.attester ? String(onchain.attester) : null,
     anchoredAt: onchain?.timestamp === undefined ? null : Number(onchain.timestamp),
     revoked: onchain?.revoked === undefined ? proof.anchor_status === 'revoked' : Boolean(onchain.revoked),

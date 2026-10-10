@@ -77,7 +77,7 @@ describe('Berbagi akses verifikator: tautan berisi DEK (bearer, satu bukti)', ()
   });
 
   it('membangun payload minimal satu DEK', () => {
-    expect(() => buildVerifierSharePayload({ mode: 'dek', entries: [] })).toThrow(/minimal satu DEK/);
+    expect(() => buildVerifierSharePayload({ mode: 'dek', entries: [] })).toThrow(/selective disclosure/);
   });
 });
 

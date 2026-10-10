@@ -10,7 +10,10 @@ import TiltedCard from './components/TiltedCard';
 import ModernSelect from './components/ModernSelect';
 import CountUp from './landing/reactbits/CountUp';
 import { motion, AnimatePresence } from 'motion/react';
-import { encryptFileEnvelope, encryptFileName, deriveKeyFromWallet, computeCanonicalEvidenceHash, validateRecoveryPassphrase, recoverDekWithWallet } from './crypto';
+import { keccak256, toUtf8Bytes } from 'ethers';
+import { encryptFileEnvelope, encryptFileName, deriveKeyFromWallet, validateRecoveryPassphrase, recoverDekWithWallet } from './crypto';
+import { buildDisclosurePackage, type MerkleLeaf } from './merkle';
+import { createEncryptedProofCommitment, openEncryptedProofCommitment } from './proof-commitment';
 import {
   buildVerifierSharePayload,
   buildVerifierShareUrl,
@@ -96,6 +99,7 @@ function VerifierShareDialog({
   onClose: () => void;
 }) {
   const [publicKey, setPublicKey] = useState('');
+  const [disclosurePathText, setDisclosurePathText] = useState('inspection.result');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [url, setUrl] = useState('');
@@ -119,25 +123,30 @@ function VerifierShareDialog({
       if (!shareRes.ok) throw new Error(shareBody.error || 'Tautan verifikasi belum tersedia.');
       const baseUrl = shareBody.url as string;
 
-      // 2. Ambil hanya file yang tercantum pada snapshot proof ini (bukan semua
-      //    lampiran inspeksi lain yang mungkin ditambahkan sesudah proof dibuat).
-      const proofCids = new Set<string>((proof.public_snapshot?.evidence || []).map((item: any) => item.cid));
-      if (!proofCids.size) throw new Error('Bukti ini tidak mencantumkan lampiran yang dapat dibagikan.');
-      const { data: files, error: filesError } = await supabase
-        .from('evidence_files')
-        .select('cid,original_name')
-        .eq('organization_id', orgId)
-        .eq('inspection_id', proof.inspection_id)
-        .in('cid', [...proofCids]);
-      if (filesError) throw filesError;
-
-      // 3. Penerbit membuka DEK miliknya sendiri memakai KEK wallet (bukan frasa sandi pemulihan)
+      // Open the issuer-only encrypted Merkle leaves locally, then include only paths selected here.
       const accounts = (await window.ethereum.request({ method: 'eth_requestAccounts' })) as string[];
       const kekWallet = await deriveKeyFromWallet(accounts[0]);
+      const { data: proofRow, error: proofError } = await supabase.from('quality_proofs')
+        .select('organization_id,private_snapshot_ciphertext').eq('id', proof.id).single();
+      if (proofError || !proofRow?.private_snapshot_ciphertext) throw new Error('Kunci proof tidak tersedia.');
+      const privateBundle = await openEncryptedProofCommitment({
+        organizationId: proofRow.organization_id, proofRowId: proof.id,
+        envelope: proofRow.private_snapshot_ciphertext, walletKek: kekWallet, walletAccount: accounts[0],
+      });
+      const selectedPaths = [...new Set(disclosurePathText.split(',').map((item) => item.trim()).filter(Boolean))];
+      const disclosure = selectedPaths.length ? await buildDisclosurePackage(privateBundle.leaves, selectedPaths) : undefined;
+
+      const proofCids = new Set(privateBundle.leaves
+        .filter((leaf) => /^evidence\.\d+\.cid$/.test(leaf.path))
+        .map((leaf) => String(leaf.value)));
+      const filesResult = proofCids.size ? await supabase.from('evidence_files')
+        .select('cid,original_name').eq('organization_id', orgId).eq('inspection_id', proof.inspection_id)
+        .in('cid', [...proofCids]) : { data: [], error: null };
+      if (filesResult.error) throw filesResult.error;
       const verifierPublicKey = useEcies ? await importVerifierPublicKey(publicKey.trim()) : null;
 
       const entries: Array<Record<string, unknown>> = [];
-      for (const file of files || []) {
+      for (const file of filesResult.data || []) {
         const metaMatch = String(file.original_name || '').match(/#meta=([^#]+)/);
         if (!metaMatch) continue;
         const wrappedMeta = JSON.parse(decodeURIComponent(metaMatch[1]));
@@ -149,12 +158,13 @@ function VerifierShareDialog({
           entries.push({ cid: file.cid, dek: base64UrlEncode(rawDek) });
         }
       }
-      if (!entries.length) throw new Error('Bukti ini belum memiliki berkas dengan DEK yang dapat dibagikan.');
+      if (!entries.length && !disclosure) throw new Error('Pilih setidaknya satu field disclosure atau berkas proof.');
 
       const payload = buildVerifierSharePayload({
         mode: verifierPublicKey ? 'ecies' : 'dek',
         proofId: proof.public_id,
         entries: entries as any,
+        disclosure,
       });
       setUrl(buildVerifierShareUrl(baseUrl, payload));
     } catch (err: any) {
@@ -188,6 +198,10 @@ function VerifierShareDialog({
           value={publicKey}
           onChange={(e) => setPublicKey(e.target.value)}
         />
+        <label className="mb-2 block text-xs font-semibold uppercase text-slate-500 dark:text-slate-400" htmlFor="disclosure-paths">
+          Field Merkle yang dibagikan (pisahkan dengan koma)
+        </label>
+        <input id="disclosure-paths" className="mb-3 w-full rounded-xl border border-slate-200 p-2 text-sm dark:border-slate-700 dark:bg-slate-800" value={disclosurePathText} onChange={(event) => setDisclosurePathText(event.target.value)} placeholder="inspection.result, material" />
 
         <div className="flex flex-wrap gap-2">
           <button className="p-button p-button-primary" disabled={busy} onClick={() => void createShareLink()}>
@@ -695,9 +709,62 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
     }, w.msg.evidenceSaved);
   }
   async function createProof(inspectionId: string) {
-    if (!session || !org) return;
+    if (!session || !org || !supabase || !window.ethereum) { setFailure(w.msg.mmMissing); return; }
+    const client = supabase;
+    const ethereumProvider = window.ethereum;
     await perform(async () => {
-      const response = await fetch(`${API}/api/organizations/${org.id}/proofs`, { method: 'POST', headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ inspectionId }) });
+      const { data: inspection, error: inspectionError } = await client.from('inspections')
+        .select('id,batch_id,status,measurements,specification_snapshot,result_summary')
+        .eq('id', inspectionId).eq('organization_id', org.id).single();
+      if (inspectionError) throw inspectionError;
+      if (inspection.status !== 'approved') throw new Error(w.msg.proofFail);
+      const { data: batch, error: batchError } = await client.from('batches')
+        .select('id,batch_code,material_id,supplier_id').eq('id', inspection.batch_id).eq('organization_id', org.id).single();
+      if (batchError) throw batchError;
+      const [materialResult, supplierResult, evidenceResult] = await Promise.all([
+        batch.material_id ? client.from('materials').select('name').eq('id', batch.material_id).single() : Promise.resolve({ data: null, error: null }),
+        batch.supplier_id ? client.from('suppliers').select('name').eq('id', batch.supplier_id).single() : Promise.resolve({ data: null, error: null }),
+        client.from('evidence_files').select('cid,sha256').eq('organization_id', org.id).eq('inspection_id', inspectionId),
+      ]);
+      if (materialResult.error) throw materialResult.error;
+      if (supplierResult.error) throw supplierResult.error;
+      if (evidenceResult.error) throw evidenceResult.error;
+
+      const proofRowId = crypto.randomUUID();
+      const publicBytes = crypto.getRandomValues(new Uint8Array(8));
+      const publicId = `PANDU-${Array.from(publicBytes, (byte) => byte.toString(16).padStart(2, '0')).join('').toUpperCase()}`;
+      const leaves: MerkleLeaf[] = [
+        { path: 'proofId', value: publicId, salt: Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('') },
+        { path: 'batchRef', value: String(batch.batch_code), salt: Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('') },
+        { path: 'material', value: String(materialResult.data?.name || 'Belum ditentukan'), salt: Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('') },
+        { path: 'supplier', value: String(supplierResult.data?.name || 'Belum ditentukan'), salt: Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('') },
+        { path: 'inspection.result', value: String(inspection.result_summary?.result || 'PASS'), salt: Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('') },
+      ];
+      for (const measurement of inspection.measurements || []) {
+        const safePath = `measurement.${String(measurement.key).replace(/[^A-Za-z0-9._-]/g, '_')}`;
+        leaves.push({ path: safePath, value: String(measurement.value), salt: Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('') });
+      }
+      for (const [index, evidence] of (evidenceResult.data || []).entries()) {
+        leaves.push({ path: `evidence.${index}.cid`, value: String(evidence.cid), salt: Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('') });
+        leaves.push({ path: `evidence.${index}.hash`, value: String(evidence.sha256), salt: Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('') });
+      }
+      const accounts = await ethereumProvider.request({ method: 'eth_requestAccounts' }) as string[];
+      const walletKek = await deriveKeyFromWallet(accounts[0]);
+      let recoveryPassphrase = recoveryPassphraseSession;
+      if (!recoveryPassphrase) {
+        recoveryPassphrase = window.prompt('Masukkan frasa pemulihan minimal 12 karakter untuk proof ini:') || '';
+        validateRecoveryPassphrase(recoveryPassphrase);
+        setRecoveryPassphraseSession(recoveryPassphrase);
+      }
+      const { root: merkleRoot, privateEnvelope } = await createEncryptedProofCommitment({
+        organizationId: org.id, proofRowId, publicId, leaves, walletKek,
+        walletAccount: accounts[0], recoveryPassphrase,
+      });
+      const batchRefHash = keccak256(toUtf8Bytes(`PANDU:${org.id}:${batch.batch_code}`));
+      const response = await fetch(`${API}/api/organizations/${org.id}/proofs`, {
+        method: 'POST', headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inspectionId, proofRowId, publicId, merkleRoot, batchRefHash, disclosedPaths: [], privateEnvelope }),
+      });
       const body = await response.json(); if (!response.ok) throw new Error(body.error || w.msg.proofFail);
     }, w.msg.proofCreated);
   }
@@ -709,10 +776,15 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
       if (!payloadRes.ok) throw new Error(payload.error || w.msg.anchorFail);
       
       // 1. Verifikasi integritas: Hitung ulang evidenceHash dari snapshot secara mandiri di klien
-      if (!payload.snapshot) {
-        throw new Error('Backend tidak menyertakan snapshot bukti untuk verifikasi integritas klien.');
-      }
-      const localEvidenceHash = await computeCanonicalEvidenceHash(payload.snapshot);
+      const { data: proofRow, error: proofRowError } = await supabase!.from('quality_proofs').select('organization_id,private_snapshot_ciphertext').eq('id', proofId).single();
+      if (proofRowError || !proofRow?.private_snapshot_ciphertext) throw new Error(w.msg.keyUnavailable || 'Kunci proof tidak tersedia.');
+      const accounts = await window.ethereum!.request({ method: 'eth_requestAccounts' }) as string[];
+      const walletKek = await deriveKeyFromWallet(accounts[0]);
+      const proofBundle = await openEncryptedProofCommitment({
+        organizationId: proofRow.organization_id, proofRowId: proofId,
+        envelope: proofRow.private_snapshot_ciphertext, walletKek, walletAccount: accounts[0],
+      });
+      const localEvidenceHash = proofBundle.root;
       if (localEvidenceHash.toLowerCase() !== payload.evidenceHash.toLowerCase()) {
         throw new Error(
           `Integritas snapshot DITOLAK! evidenceHash lokal (${localEvidenceHash}) berbeda dari hash backend (${payload.evidenceHash}). Penandatanganan dibatalkan demi keamanan.`

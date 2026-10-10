@@ -13,6 +13,7 @@
  * Frasa sandi hanya untuk pemulihan milik penerbit sendiri.
  */
 import { bytesToHex, hexToBytes, importDek, wrapDek, unwrapDek, type WrappedKeyEntry } from './crypto';
+import type { DisclosurePackage } from './merkle';
 export { exportDekRaw } from './crypto';
 
 export type VerifierShareMode = 'dek' | 'ecies';
@@ -33,6 +34,7 @@ export interface VerifierSharePayload {
   mode: VerifierShareMode;
   proofId?: string;
   entries: VerifierShareEntryPlain[] | VerifierShareEntryWrapped[];
+  disclosure?: DisclosurePackage;
 }
 
 export const VERIFIER_SHARE_ALG = 'ECDH-P256+HKDF-SHA256+AES-256-GCM';
@@ -143,11 +145,12 @@ export function buildVerifierSharePayload(options: {
   mode: VerifierShareMode;
   proofId?: string;
   entries: VerifierShareEntryPlain[] | VerifierShareEntryWrapped[];
+  disclosure?: DisclosurePackage;
 }): VerifierSharePayload {
-  if (options.mode === 'dek' && options.entries.length === 0) {
-    throw new Error('Payload harus memuat minimal satu DEK untuk tautan berbagi.');
+  if (options.entries.length === 0 && !options.disclosure) {
+    throw new Error('Payload harus memuat DEK bukti atau selective disclosure.');
   }
-  return { v: 1, mode: options.mode, proofId: options.proofId, entries: options.entries };
+  return { v: 1, mode: options.mode, proofId: options.proofId, entries: options.entries, disclosure: options.disclosure };
 }
 
 /** Serialisasi payload ke fragmen URL: `#k=...` (bearer) atau `#w=...` (ECIES). */
@@ -164,7 +167,7 @@ export function parseVerifierShareFragment(hash: string): VerifierSharePayload |
   try {
     const json = new TextDecoder().decode(base64UrlDecode(match[2]));
     const payload = JSON.parse(json) as VerifierSharePayload;
-    if (payload?.v !== 1 || !Array.isArray(payload.entries) || payload.entries.length === 0) return null;
+    if (payload?.v !== 1 || !Array.isArray(payload.entries) || (payload.entries.length === 0 && !payload.disclosure)) return null;
     const expectedMode: VerifierShareMode = match[1] === 'w' ? 'ecies' : 'dek';
     if (payload.mode !== expectedMode) return null;
     return payload;

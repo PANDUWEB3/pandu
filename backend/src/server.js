@@ -105,14 +105,31 @@ const RevokeBodySchema = z.object({
   deadline: z.union([z.number(), z.string(), z.bigint()]).optional(),
 });
 
+const WrappedDekSchema = z.object({
+  v: z.literal(1), alg: z.literal('A256GCM'), kid: z.string().min(1).max(128),
+  iv: z.string().min(16).max(32), data: z.string().min(64).max(512),
+}).strict();
 const CreateProofBodySchema = z.object({
   inspectionId: z.string().uuid('ID inspeksi harus berupa UUID valid'),
-  evidence: z.array(z.object({
-    cid: z.string().min(1),
-    sha256: z.string().optional(),
-    hmac: z.string().optional(),
-    salt: z.string().optional(),
-  })).optional(),
+  proofRowId: z.string().uuid(),
+  publicId: z.string().regex(/^PANDU-[A-Fa-f0-9]{16}$/),
+  merkleRoot: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+  batchRefHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+  disclosedPaths: z.array(z.string().min(1).max(256).refine((value) => !/[\u0000-\u001f\u007f]/.test(value))).max(128),
+  privateEnvelope: z.object({
+    v: z.literal(1),
+    alg: z.literal('A256GCM'),
+    kid: z.string().min(1).max(128),
+    iv: z.string().min(16).max(32),
+    data: z.string().min(24).max(2_000_000),
+    aad: z.string().min(2).max(2048),
+    wrappedDek: z.object({
+      wallet: WrappedDekSchema.extend({ account: z.string().regex(/^0x[0-9a-fA-F]{40}$/) }),
+      recovery: WrappedDekSchema.extend({ kdf: z.literal('PBKDF2-SHA256'), salt: z.string().min(20).max(64), iterations: z.number().int().min(600000) }),
+    }).strict(),
+  }).strict(),
+}).strict().superRefine((value, context) => {
+  if (new Set(value.disclosedPaths).size !== value.disclosedPaths.length) context.addIssue({ code: 'custom', path: ['disclosedPaths'], message: 'Disclosure paths must be unique.' });
 });
 
 const InviteMemberBodySchema = z.object({
@@ -468,22 +485,6 @@ app.delete('/api/organizations/:orgId/members/:userId', requireSupabaseUser, asy
     res.json({ ok: true });
   } catch (error) { logRouteFailure('organization_member_revoke_failed', error); res.status(403).json({ error: 'Akses anggota tidak dapat dicabut.' }); }
 });
-async function getBatchDetails(orgId, inspectionId) {
-  const { data: inspection, error: inspectionError } = await supabaseAdmin.from('inspections').select('id,batch_id,organization_id,status,result_summary,measurements,specification_snapshot,reviewer_id,reviewed_at').eq('id', inspectionId).eq('organization_id', orgId).maybeSingle();
-  if (inspectionError) throw inspectionError;
-  if (!inspection) throw new Error('Inspeksi tidak ditemukan.');
-  const { data: batch, error: batchError } = await supabaseAdmin.from('batches').select('id,batch_code,material_id,supplier_id').eq('id', inspection.batch_id).eq('organization_id', orgId).single();
-  if (batchError) throw batchError;
-  const [material, supplier] = await Promise.all([
-    batch.material_id ? supabaseAdmin.from('materials').select('name').eq('id', batch.material_id).single() : Promise.resolve({ data: null, error: null }),
-    batch.supplier_id ? supabaseAdmin.from('suppliers').select('name').eq('id', batch.supplier_id).single() : Promise.resolve({ data: null, error: null }),
-  ]);
-  if (material.error) throw material.error;
-  if (supplier.error) throw supplier.error;
-  return { inspection, batch, material: material.data?.name || 'Belum ditentukan', supplier: supplier.data?.name || 'Belum ditentukan' };
-}
-function dbBatchRef(orgId, batchCode) { return keccak256(toUtf8Bytes(`PANDU:${orgId}:${batchCode}`)); }
-
 app.post('/api/organizations/:orgId/proofs', requireSupabaseUser, async (req, res) => {
   if (!supabaseAdmin) return res.status(503).json({ error: 'Supabase server belum dikonfigurasi.' });
   try {
@@ -493,45 +494,24 @@ app.post('/api/organizations/:orgId/proofs', requireSupabaseUser, async (req, re
     await requireOrgRole(req.authUser.id, orgId, ['owner', 'admin', 'qa']);
     const parsed = CreateProofBodySchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Input bukti tidak valid.' });
-    const { inspectionId, evidence } = parsed.data;
-    let evidenceItems = evidence;
-    if (!evidenceItems || !evidenceItems.length) {
-      const { data: dbFiles } = await supabaseAdmin.from('evidence_files').select('cid,sha256,original_name').eq('organization_id', orgId).eq('inspection_id', inspectionId);
-      evidenceItems = (dbFiles || []).map((f) => {
-        const saltMatch = f.original_name?.match(/#salt=([a-fA-F0-9]{64})/);
-        return {
-          cid: f.cid,
-          hmac: String(f.sha256 || '').replace(/^\\x/, ''),
-          salt: saltMatch ? saltMatch[1] : randomBytes(32).toString('hex')
-        };
-      });
-    }
-    const { inspection, batch, material, supplier } = await getBatchDetails(orgId, inspectionId);
-    if (inspection.status !== 'approved' || inspection.result_summary?.result !== 'PASS') return res.status(409).json({ error: 'Bukti hanya dapat dibuat dari inspeksi PASS yang sudah disetujui QA.' });
+    const { inspectionId, proofRowId, publicId, merkleRoot, batchRefHash, disclosedPaths, privateEnvelope } = parsed.data;
+    const { data: inspection, error: inspectionError } = await supabaseAdmin.from('inspections').select('id,status').eq('id', inspectionId).eq('organization_id', orgId).maybeSingle();
+    if (inspectionError) throw inspectionError;
+    if (!inspection) return res.status(404).json({ error: 'Inspeksi tidak ditemukan.' });
+    if (inspection.status !== 'approved') return res.status(409).json({ error: 'Bukti hanya dapat dibuat dari inspeksi yang disetujui QA.' });
     const { data: existing } = await supabaseAdmin.from('quality_proofs').select('*').eq('organization_id', orgId).eq('inspection_id', inspectionId).maybeSingle();
     if (existing) return res.json({ proof: existing });
-    const proofRowId = randomUUID();
-    const publicId = `PANDU-${randomBytes(8).toString('hex').toUpperCase()}`;
+    if (!req.authUser.id) return res.status(401).json({ error: 'Authentication required.' });
     const publicToken = createHmac('sha256', process.env.PUBLIC_TOKEN_SECRET).update(proofRowId).digest('base64url');
-    const salt = randomBytes(32).toString('hex');
-    const snapshot = {
-      canonicalizationVersion: 1,
-      proofId: publicId,
-      batchRef: batch.batch_code,
-      material,
-      supplier,
-      inspection: { checks: inspection.result_summary.checks, result: inspection.result_summary.result },
-      evidence: evidenceItems.map((item) => ({
-        cid: item.cid,
-        hmac: item.hmac || String(item.sha256 || '').replace(/^\\x/, ''),
-        salt: item.salt || randomBytes(32).toString('hex'),
-      })).sort((a, b) => a.cid.localeCompare(b.cid)),
-      salt,
-      approvedAt: inspection.reviewed_at,
-    };
-    const commitmentValue = `0x${sha256Hex(canonicalJson(snapshot))}`;
+    const publicSnapshot = { format: 'pandu-merkle-v1', disclosedPaths: [] };
     const tokenHash = hexBytes32(sha256Hex(publicToken));
-    const { data: proof, error } = await supabaseAdmin.from('quality_proofs').insert({ id: proofRowId, organization_id: orgId, inspection_id: inspectionId, public_id: publicId, public_token_hash: tokenHash, public_snapshot: snapshot, canonicalization_version: 1, commitment: hexBytes32(commitmentValue), chain_id: Number(chainId), contract_address: process.env.PANDU_REGISTRY_ADDRESS, anchor_status: 'not_anchored', created_by: req.authUser.id }).select('*').single();
+    const { data: proof, error } = await supabaseAdmin.from('quality_proofs').insert({
+      id: proofRowId, organization_id: orgId, inspection_id: inspectionId, public_id: publicId,
+      public_token_hash: tokenHash, public_snapshot: publicSnapshot, canonicalization_version: 2,
+      merkle_version: 'pandu-merkle-v1', disclosed_paths: disclosedPaths, batch_ref_hash: hexBytes32(batchRefHash),
+      private_snapshot_ciphertext: privateEnvelope, commitment: hexBytes32(merkleRoot), chain_id: Number(chainId),
+      contract_address: process.env.PANDU_REGISTRY_ADDRESS, anchor_status: 'not_anchored', created_by: req.authUser.id,
+    }).select('*').single();
     if (error) throw error;
     await supabaseAdmin.from('audit_events').insert({ organization_id: orgId, actor_id: req.authUser.id, action: 'quality_proof.created', entity_type: 'quality_proof', entity_id: proof.id });
     res.status(201).json({ proof, verificationUrl: `${origin}/verify/${publicToken}` });
@@ -555,10 +535,9 @@ app.get('/api/proofs/:proofRowId/share', requireSupabaseUser, async (req, res) =
 app.get('/api/proofs/:proofRowId/sign-payload', requireSupabaseUser, async (req, res) => {
   if (!supabaseAdmin) return res.status(503).json({ error: 'Supabase server belum dikonfigurasi.' });
   try {
-    const { data: proof, error } = await supabaseAdmin.from('quality_proofs').select('*').eq('id', req.params.proofRowId).maybeSingle();
+    const { data: proof, error } = await supabaseAdmin.from('quality_proofs').select('id,organization_id,public_id,commitment,public_snapshot,batch_ref_hash,merkle_version,disclosed_paths,chain_id,contract_address').eq('id', req.params.proofRowId).maybeSingle();
     if (error) throw error;
     if (!proof) return res.status(404).json({ error: 'Bukti tidak ditemukan.' });
-    const { batch } = await getBatchDetails(proof.organization_id, proof.inspection_id);
     const domain = {
       name: "PANDUQualityRegistry",
       version: "2",
@@ -568,9 +547,11 @@ app.get('/api/proofs/:proofRowId/sign-payload', requireSupabaseUser, async (req,
     res.json({
       domain,
       proofId: proofIdBytes(proof.public_id),
-      batchRef: dbBatchRef(proof.organization_id, batch.batch_code),
+      batchRef: `0x${bytes32Hex(proof.batch_ref_hash)}`,
       evidenceHash: `0x${bytes32Hex(proof.commitment)}`,
       snapshot: proof.public_snapshot,
+      merkleVersion: proof.merkle_version || null,
+      disclosedPaths: proof.disclosed_paths || [],
     });
   } catch (error) { logRouteFailure('proof_sign_payload_failed', error); res.status(400).json({ error: 'Payload tanda tangan tidak tersedia.' }); }
 });
@@ -611,7 +592,7 @@ app.post('/api/proofs/:proofRowId/anchor', requireSupabaseUser, async (req, res)
       return res.status(400).json({ error: 'Tanda tangan sudah kedaluwarsa (deadline telah lewat).' });
     }
     const MAX_DEADLINE_SECONDS = 15 * 60; // 15 menit
-    if (deadlineNum > now + MAX_DEADLINE_SECONDS + 60) {
+    if (deadlineNum > now + MAX_DEADLINE_SECONDS) {
       return res.status(400).json({ error: 'Deadline tanda tangan maksimal 15 menit dari waktu saat ini.' });
     }
 
@@ -630,7 +611,6 @@ app.post('/api/proofs/:proofRowId/anchor', requireSupabaseUser, async (req, res)
     if (proof.anchor_status === 'confirmed') return res.json({ proof });
     const { error: updateError } = await supabaseAdmin.from('quality_proofs').update({ anchor_status: 'pending' }).eq('id', proof.id);
     if (updateError) throw updateError;
-    const { batch } = await getBatchDetails(proof.organization_id, proof.inspection_id);
     const provider = getProvider();
     const network = await provider.getNetwork();
     if (network.chainId !== chainId) throw new Error(`RPC tersambung ke ${network.chainId}, seharusnya ${chainLabel} (${chainId}).`);
@@ -639,7 +619,7 @@ app.post('/api/proofs/:proofRowId/anchor', requireSupabaseUser, async (req, res)
     const relayerRole = await registry.RELAYER_ROLE();
     if (!(await registry.hasRole(relayerRole, wallet.address))) throw new Error(`Wallet relayer ${wallet.address} belum memiliki RELAYER_ROLE pada kontrak.`);
     const idHash = proofIdBytes(proof.public_id);
-    const refHash = dbBatchRef(proof.organization_id, batch.batch_code);
+    const refHash = `0x${bytes32Hex(proof.batch_ref_hash)}`;
     const digest = `0x${bytes32Hex(proof.commitment)}`;
     
     const { tx, receipt } = await submitRegistryTransaction({
@@ -676,7 +656,7 @@ app.post('/api/proofs/:proofRowId/revoke', requireSupabaseUser, async (req, res)
         return res.status(400).json({ error: 'Tanda tangan sudah kedaluwarsa (deadline telah lewat).' });
       }
       const MAX_DEADLINE_SECONDS = 15 * 60; // 15 menit
-      if (deadlineNum > now + MAX_DEADLINE_SECONDS + 60) {
+      if (deadlineNum > now + MAX_DEADLINE_SECONDS) {
         return res.status(400).json({ error: 'Deadline tanda tangan maksimal 15 menit dari waktu saat ini.' });
       }
     }
@@ -832,7 +812,7 @@ app.post('/api/anchor', async (_req, res) => {
       return res.status(400).json({ error: 'Tanda tangan sudah kedaluwarsa (deadline telah lewat).' });
     }
     const MAX_DEADLINE_SECONDS = 15 * 60;
-    if (deadlineNum > now + MAX_DEADLINE_SECONDS + 60) {
+    if (deadlineNum > now + MAX_DEADLINE_SECONDS) {
       return res.status(400).json({ error: 'Deadline tanda tangan maksimal 15 menit dari waktu saat ini.' });
     }
     const { tx, receipt } = await submitRegistryTransaction({
@@ -875,7 +855,7 @@ app.post('/api/revoke', async (req, res) => {
         return res.status(400).json({ error: 'Tanda tangan sudah kedaluwarsa (deadline telah lewat).' });
       }
       const MAX_DEADLINE_SECONDS = 15 * 60;
-      if (deadlineNum > now + MAX_DEADLINE_SECONDS + 60) {
+      if (deadlineNum > now + MAX_DEADLINE_SECONDS) {
         return res.status(400).json({ error: 'Deadline tanda tangan maksimal 15 menit dari waktu saat ini.' });
       }
     }

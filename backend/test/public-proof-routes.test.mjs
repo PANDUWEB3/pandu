@@ -9,6 +9,7 @@ test('public proof route returns minimum metadata and never serializes a busines
   const proofRow = {
     public_id: 'PANDU-0123456789ABCDEF', anchor_status: 'confirmed', chain_id: 421614,
     contract_address: contractAddress, commitment: Buffer.alloc(32, 0xab), transaction_hash: '0xtx',
+    merkle_version: 'pandu-merkle-v1', disclosed_paths: ['inspection.result'],
     public_snapshot: { supplier: 'fixture supplier', measurement: 'fixture measurement' },
   };
   const supabaseAdmin = {
@@ -16,7 +17,7 @@ test('public proof route returns minimum metadata and never serializes a busines
       assert.equal(table, 'quality_proofs');
       return {
         select(columns) {
-          assert.equal(columns, 'public_id,anchor_status,commitment,chain_id,contract_address,transaction_hash');
+          assert.equal(columns, 'public_id,anchor_status,commitment,chain_id,contract_address,transaction_hash,merkle_version,disclosed_paths');
           return { eq() { return { maybeSingle: async () => ({ data: proofRow, error: null }) }; } };
         },
       };
@@ -37,12 +38,14 @@ test('public proof route returns minimum metadata and never serializes a busines
   assert.equal(response.status, 200);
   assert.deepEqual(Object.keys(body).sort(), [
     'anchoredAt', 'attester', 'chainId', 'commitment', 'contractAddress', 'legacy',
-    'proofId', 'revoked', 'status', 'transactionHash',
+    'proofId', 'revoked', 'status', 'transactionHash', 'merkleVersion', 'disclosedPaths',
   ].sort());
   assert.equal(body.status, 'ANCHORED');
   assert.equal(body.transactionHash, '0xtx');
   assert.equal(body.attester, '0x0000000000000000000000000000000000000002');
   assert.equal(body.anchoredAt, 12345);
+  assert.equal(body.merkleVersion, 'pandu-merkle-v1');
+  assert.deepEqual(body.disclosedPaths, ['inspection.result']);
   assert.equal(JSON.stringify(body).includes('fixture supplier'), false);
   assert.equal(JSON.stringify(body).includes('fixture measurement'), false);
 });

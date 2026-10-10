@@ -6,7 +6,7 @@ import { useI18n } from '../i18n';
 import { Tilt } from './ui';
 import Navbar from './Navbar';
 import Footer from './Footer';
-import { decryptFileClient, deriveKeyFromWallet, deriveKeyFromPasskey, computeCanonicalEvidenceHash, sha256Hex } from '../crypto';
+import { decryptFileClient, deriveKeyFromWallet, deriveKeyFromPasskey, computeCanonicalEvidenceHash, computeFileHmacSha256, sha256Hex } from '../crypto';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8787';
 
@@ -160,6 +160,9 @@ export function PublicProof({ token }: { token: string }) {
     success: boolean;
     fileName?: string;
     decryptedSha256?: string;
+    decryptedHmac?: string;
+    matchedCid?: string;
+    perFileSalt?: string;
     hashMatchedEvidence?: boolean;
     recomputedEvidenceHash?: string;
     onchainCommitmentMatch?: boolean;
@@ -195,12 +198,33 @@ export function PublicProof({ token }: { token: string }) {
         decryptedSha256 = decrypted.decryptedSha256;
       }
 
-      // 1. Cek kecocokan hash berkas dengan lampiran bukti di canonical snapshot
+      // 1. Cek kecocokan HMAC atau hash berkas dengan lampiran bukti di canonical snapshot
       const evidenceList: any[] = result.proof.evidence || [];
       const hashList: string[] = result.proof.evidenceHashes || [];
-      const hashMatchedEvidence =
-        evidenceList.some((ev: any) => ev.sha256?.toLowerCase() === decryptedSha256.toLowerCase()) ||
-        hashList.some((h: string) => h.toLowerCase() === decryptedSha256.toLowerCase());
+
+      let matchedEvidenceItem: any = null;
+      let matchedHmac: string | undefined;
+
+      for (const ev of evidenceList) {
+        if (ev.hmac && ev.salt) {
+          const candidateHmac = await computeFileHmacSha256(decryptedBytes, ev.salt);
+          if (candidateHmac.toLowerCase() === ev.hmac.toLowerCase()) {
+            matchedEvidenceItem = ev;
+            matchedHmac = candidateHmac;
+            break;
+          }
+        } else if (ev.sha256) {
+          if (ev.sha256.toLowerCase() === decryptedSha256.toLowerCase()) {
+            matchedEvidenceItem = ev;
+            break;
+          }
+        }
+      }
+
+      const hashMatchedEvidence = Boolean(
+        matchedEvidenceItem ||
+        hashList.some((h: string) => h.toLowerCase() === decryptedSha256.toLowerCase())
+      );
 
       // 2. Rakit ulang Canonical Proof Snapshot
       const reconstructedSnapshot = {
@@ -226,6 +250,9 @@ export function PublicProof({ token }: { token: string }) {
         success: onchainCommitmentMatch && hashMatchedEvidence,
         fileName: file.name,
         decryptedSha256,
+        decryptedHmac: matchedHmac,
+        matchedCid: matchedEvidenceItem?.cid,
+        perFileSalt: matchedEvidenceItem?.salt,
         hashMatchedEvidence,
         recomputedEvidenceHash,
         onchainCommitmentMatch,
@@ -468,10 +495,18 @@ export function PublicProof({ token }: { token: string }) {
                             </div>
                             <div className="grid grid-cols-1 gap-1.5 text-[11px] font-mono break-all">
                               <div><strong>Berkas:</strong> {verificationReport.fileName}</div>
-                              <div><strong>SHA-256 Berkas Terdekripsi:</strong> {verificationReport.decryptedSha256}</div>
+                              <div><strong>SHA-256 Plaintext:</strong> {verificationReport.decryptedSha256}</div>
+                              {verificationReport.decryptedHmac && (
+                                <div><strong>HMAC-SHA256 (Per-File Salt):</strong> {verificationReport.decryptedHmac}</div>
+                              )}
+                              {verificationReport.perFileSalt && (
+                                <div><strong>Salt Berkas:</strong> {verificationReport.perFileSalt}</div>
+                              )}
                               <div>
-                                <strong>Kesesuaian Lampiran (CID/Hash):</strong>{' '}
-                                {verificationReport.hashMatchedEvidence ? '✓ Cocok dengan lampiran snapshot' : '✗ Tidak ditemukan di bukti ini'}
+                                <strong>Kesesuaian Lampiran (CID/HMAC):</strong>{' '}
+                                {verificationReport.hashMatchedEvidence
+                                  ? `✓ Cocok dengan lampiran snapshot (${verificationReport.matchedCid || 'terdaftar'})`
+                                  : '✗ Tidak ditemukan di bukti ini'}
                               </div>
                               <div><strong>Canonical evidenceHash Dihitung:</strong> {verificationReport.recomputedEvidenceHash}</div>
                               <div><strong>On-chain Commitment di Kontrak:</strong> {result.commitment}</div>

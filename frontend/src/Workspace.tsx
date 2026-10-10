@@ -9,7 +9,7 @@ import TiltedCard from './components/TiltedCard';
 import ModernSelect from './components/ModernSelect';
 import CountUp from './landing/reactbits/CountUp';
 import { motion, AnimatePresence } from 'motion/react';
-import { encryptFileClient, deriveKeyFromWallet, deriveKeyFromPasskey } from './crypto';
+import { encryptFileClient, deriveKeyFromWallet, deriveKeyFromPasskey, computeCanonicalEvidenceHash } from './crypto';
 
 declare global { interface Window { ethereum?: { request(args: { method: string; params?: unknown[] }): Promise<unknown> } } }
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8787';
@@ -380,7 +380,8 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
       
       const accounts = await window.ethereum!.request({ method: 'eth_requestAccounts' }) as string[];
       const attester = accounts[0];
-      const deadline = Math.floor(Date.now() / 1000) + 3600;
+      const MAX_DEADLINE_SECONDS = 15 * 60; // Maksimal 15 menit
+      const deadline = Math.floor(Date.now() / 1000) + MAX_DEADLINE_SECONDS;
 
       const typedData = {
         domain: payload.domain,
@@ -426,7 +427,7 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
     if (!window.ethereum) { setFailure(w.msg.mmMissing); return; }
     
     await perform(async () => {
-      // 1. Derivasi kunci enkripsi dari wallet atau passkey
+      // 1. Derivasi kunci enkripsi dari wallet (HKDF) atau passkey
       let key: CryptoKey;
       if (window.ethereum) {
         const accounts = (await window.ethereum.request({ method: 'eth_requestAccounts' })) as string[];
@@ -435,8 +436,8 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
         key = await deriveKeyFromPasskey('PANDU');
       }
       
-      // 2. Enkripsi berkas menggunakan AES-GCM (IV 12-byte + ciphertext)
-      const { payload, plaintextSha256 } = await encryptFileClient(file, key);
+      // 2. Enkripsi berkas menggunakan AES-GCM dan hitung HMAC-SHA256 dengan salt per-file
+      const { payload, fileHmac, fileSalt } = await encryptFileClient(file, key);
       const encryptedBlob = new Blob([payload], { type: 'application/octet-stream' });
       
       // 3. Unggah ciphertext ke backend (yang meneruskan ke Pinata IPFS)
@@ -456,10 +457,10 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
         organization_id: org.id,
         inspection_id: inspection.id,
         cid: body.cid,
-        original_name: file.name,
+        original_name: `${file.name}#salt=${fileSalt}`,
         mime_type: 'application/octet-stream',
         byte_size: encryptedBlob.size,
-        sha256: `\\x${plaintextSha256}`,
+        sha256: `\\x${fileHmac}`,
         uploaded_by: session.user.id
       });
       
@@ -480,9 +481,37 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
       const payload = await payloadRes.json();
       if (!payloadRes.ok) throw new Error(payload.error || w.msg.anchorFail);
       
+      // 1. Verifikasi integritas: Hitung ulang evidenceHash dari snapshot secara mandiri di klien
+      if (!payload.snapshot) {
+        throw new Error('Backend tidak menyertakan snapshot bukti untuk verifikasi integritas klien.');
+      }
+      const localEvidenceHash = await computeCanonicalEvidenceHash(payload.snapshot);
+      if (localEvidenceHash.toLowerCase() !== payload.evidenceHash.toLowerCase()) {
+        throw new Error(
+          `Integritas snapshot DITOLAK! evidenceHash lokal (${localEvidenceHash}) berbeda dari hash backend (${payload.evidenceHash}). Penandatanganan dibatalkan demi keamanan.`
+        );
+      }
+
+      // 2. Tampilkan snapshot ke pengguna untuk konfirmasi eksplisit sebelum meminta tanda tangan MetaMask
+      const confirmReview = window.confirm(
+        `[PANDU v2] TINJAU SNAPSHOT SEBELUM PENANDATANGANAN ON-CHAIN:\n\n` +
+        `Nomor Bukti : ${payload.snapshot.proofId}\n` +
+        `Batch       : ${payload.snapshot.batchRef}\n` +
+        `Material    : ${payload.snapshot.material}\n` +
+        `Pemasok     : ${payload.snapshot.supplier}\n` +
+        `Hasil QC    : ${payload.snapshot.inspection?.result || 'PASS'}\n` +
+        `Lampiran    : ${payload.snapshot.evidence?.length || 0} berkas (HMAC terverifikasi)\n` +
+        `evidenceHash: ${localEvidenceHash}\n\n` +
+        `Apakah Anda menyetujui snapshot ini untuk ditandatangani via wallet Anda?`
+      );
+      if (!confirmReview) {
+        throw new Error('Penandatanganan dibatalkan oleh pengguna setelah meninjau snapshot.');
+      }
+
       const accounts = await window.ethereum!.request({ method: 'eth_requestAccounts' }) as string[];
       const attester = accounts[0];
-      const deadline = Math.floor(Date.now() / 1000) + 3600;
+      const MAX_DEADLINE_SECONDS = 15 * 60; // Maksimal 15 menit
+      const deadline = Math.floor(Date.now() / 1000) + MAX_DEADLINE_SECONDS;
       
       const typedData = {
         domain: payload.domain,

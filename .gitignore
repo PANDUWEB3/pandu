@@ -2,6 +2,8 @@ node_modules/
 dist/
 .env
 **/.env
+**/.env.*
+!**/.env.example
 /smart-contract/.env
 backend/data/
 frontend/.env.local

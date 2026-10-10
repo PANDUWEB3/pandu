@@ -1,23 +1,21 @@
-# Desain Merkle Selective Disclosure PANDU v2
+﻿# Desain Merkle Selective Disclosure PANDU v2
 
-Dokumen desain format proof; tidak mengubah database atau kontrak yang sedang dipakai. Root Merkle menggantikan canonical JSON hash hanya setelah versi proof dan jalur migrasi disepakati.
+## Format kanonikal
 
-## Hash dan urutan
+`pandu-merkle-v1` memakai SHA-256. Leaf disortir menurut byte UTF-8 path secara leksikografis, bukan urutan unit kode UTF-16. Path harus UTF-8 valid, tidak kosong, unik, dan salt harus tepat 32 byte acak. Objek JSON menyortir key menurut byte UTF-8; array mempertahankan urutan; string/boolean/null mengikuti JSON; angka hanya integer aman. Pengukuran fixed-point diserialisasi sebagai string desimal agar lintas bahasa tidak mengalami pembulatan.
 
-Leaf disortir berdasarkan `path` UTF-8 leksikografis dan path harus unik. Preimage leaf adalah `0x00 || UTF8(canonicalJson({path, salt, value}))`; hash node adalah `0x01 || leftHash || rightHash`. Prefix byte memisahkan domain leaf dari node. Child tidak diurutkan ulang: posisi kiri/kanan berasal dari urutan path.
+Preimage leaf adalah `0x00 || UTF8(canonicalJson({path, salt, value}))`; node adalah `0x01 || leftHash || rightHash`. Posisi kiri/kanan berasal dari urutan path dan tidak diurutkan ulang. Bila level memiliki node ganjil, node terakhir dipromosikan tanpa hashing ulang dan tanpa sibling. Ini sesuai bentuk rekursif RFC 6962 §2.1 (split pada pangkat dua terbesar yang lebih kecil dari jumlah leaf).
 
-Untuk setiap level, pasangan berurutan digabungkan. Bila jumlah node ganjil, node terakhir dipromosikan tanpa hashing ulang dan tanpa sibling. Ini sama dengan definisi rekursif RFC 6962 §2.1 (split pada pangkat dua terbesar yang lebih kecil dari jumlah leaf). Audit path harus merekam sisi sibling; promosi ganjil tidak menambahkan langkah.
+## Kerahasiaan dan selective disclosure
 
-## Salt leaf
+Penerbit membuat salt independen untuk setiap field dan menyimpan path, nilai serta salt hanya dalam envelope proof terenkripsi yang dikuasai klien. Snapshot publik hanya memuat format, path yang dibuka (bukan nilainya), root dan metadata publik yang diperlukan. Salt tidak pernah disimpan di snapshot. Untuk membuka satu field, klien membagikan nilai, salt dan audit path. Paket disclosure dapat berada pada URL fragment (`#d=`), yang tidak dikirim dalam request HTTP; tetap perlakukan tautan tersebut sebagai data sensitif.
 
-Setiap leaf memakai salt acak independen 32 byte. Seluruh daftar salt beserta path/value disimpan di envelope terenkripsi yang dikuasai penerbit (DEK organisasi/proof); backup mengikuti prosedur key custody. Salt yang diperlukan untuk leaf yang dibuka diberikan kepada verifier bersama value dan audit path. Salt leaf tertutup dan envelope tidak pernah dikirim. Salt bukan rahasia setelah leaf dibuka, tetapi kerahasiaan sebelum disclosure mencegah tebakan nilai berentropi rendah.
+Root saja tidak membuktikan kelengkapan klaim. Aplikasi/verifikator harus menetapkan path wajib dan memeriksa commitment root langsung dari chain. Frontend menghitung ulang root sebelum penerbit menandatangani. Tenggat signature maksimal 15 menit.
 
 ## Penyimpangan dari RFC 6962
 
-RFC 6962 mendefinisikan log append-only, bukan format proof PANDU untuk snapshot terurut. PANDU memakai record bisnis kanonikal sebagai leaf, menambah `path` dan salt acak, mengurutkan berdasarkan path, dan menggunakan root sebagai commitment proof tunggal. Struktur hash, prefix `0x00/0x01`, orientasi anak, dan promosi node ganjil mengikuti konstruksi Merkle RFC 6962; ini bukan log transparency RFC, tidak memberikan consistency proof antarversi, dan tidak mewarisi jaminan append-only. Versi format wajib disertakan agar root legacy `SHA-256(canonicalJson(snapshot))` tidak tertukar.
+RFC 6962 mendefinisikan log append-only, bukan snapshot selektif PANDU. PANDU menggunakan record bisnis sebagai leaf, menambahkan path dan salt acak, mengurutkan leaf menurut byte UTF-8, dan menggunakan root sebagai commitment proof tunggal. Struktur hash dan promosi node ganjil mengikuti bentuk RFC, tetapi format ini bukan log transparency, tidak menyediakan consistency proof ant versi, dan tidak memberi jaminan append-only. Versi format memisahkan root ini dari legacy `SHA-256(canonicalJson(snapshot))`.
 
-## Verifikasi dan test vectors
+## Implementasi dan vektor
 
-Verifier menghitung leaf yang dibuka, menelusuri audit path, lalu membandingkan root terhadap commitment on-chain. Root saja tidak membuktikan kelengkapan klaim; aplikasi harus menentukan path wajib atau klaim yang dapat dibuka.
-
-Test Merkle menguji pemisahan prefix, root untuk jumlah leaf ganjil, audit path setiap posisi, dan perubahan salt/value. Vector lintas bahasa harus mencantumkan path/value/salt, preimage dan hash leaf, arah sibling, serta root.
+TypeScript frontend dan Node backend mengimplementasikan format sama. Vektor bersama terdapat di `test-vectors/merkle-selective-disclosure-vectors.json` dan `test-vectors/merkle-portability-vectors.json`; vektor portabilitas mencakup urutan UTF-8 yang berbeda dari UTF-16 dan angka fixed-point. Fase 5 menambahkan pembaca Rust terhadap byte-vector yang sama. Test memeriksa preimage, leaf hash, root, orientasi sibling, ganjil, duplikasi path, encoding salt, angka, dan disclosure yang dimodifikasi.

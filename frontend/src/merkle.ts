@@ -12,8 +12,6 @@
  * Penyimpangan terhadap RFC 6962 terdokumentasi di
  * documentation/SELECTIVE_DISCLOSURE_MERKLE_DESIGN.md bagian "Penyimpangan".
  */
-import { canonicalJson } from './crypto';
-
 export const MERKLE_LEAF_PREFIX = 0x00;
 export const MERKLE_NODE_PREFIX = 0x01;
 export const MERKLE_VERSION = 'pandu-merkle-v1';
@@ -44,14 +42,48 @@ export function toHex(bytes: Uint8Array): string {
 
 export function fromHex(hex: string): Uint8Array {
   const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
+  if (!/^(?:[0-9a-fA-F]{2})+$/.test(clean)) throw new Error('Hex Merkle tidak valid.');
   const bytes = new Uint8Array(clean.length / 2);
   for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(clean.substring(i * 2, i * 2 + 2), 16);
   return bytes;
 }
 
-/** Preimage kanonikal leaf: canonicalJson({path, salt, value}) dengan urutan key alfabetis. */
+const encoder = new TextEncoder();
+const decoder = new TextDecoder('utf-8', { fatal: true });
+
+function compareUtf8(a: string, b: string): number {
+  const left = encoder.encode(a);
+  const right = encoder.encode(b);
+  const length = Math.min(left.length, right.length);
+  for (let i = 0; i < length; i++) if (left[i] !== right[i]) return left[i] - right[i];
+  return left.length - right.length;
+}
+
+function canonicalMerkleJson(value: unknown): string {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new Error('Nilai angka Merkle harus integer aman; angka desimal gunakan string fixed-point.');
+    return String(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalMerkleJson).join(',')}]`;
+  if (typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort(compareUtf8);
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalMerkleJson(record[key])}`).join(',')}}`;
+  }
+  throw new Error('Nilai leaf harus JSON kanonikal.');
+}
+
+function validateLeaf(leaf: MerkleLeaf): void {
+  if (typeof leaf.path !== 'string' || !leaf.path.length || decoder.decode(encoder.encode(leaf.path)) !== leaf.path) throw new Error('Path Merkle harus UTF-8 valid dan tidak kosong.');
+  if (typeof leaf.salt !== 'string' || !/^[0-9a-fA-F]{64}$/.test(leaf.salt)) throw new Error('Salt Merkle harus 32 byte hex.');
+  canonicalMerkleJson(leaf.value);
+}
+
+/** Preimage is canonical UTF-8 JSON: stable UTF-8 byte ordering, safe integer numbers only. */
 export function canonicalLeafData(leaf: MerkleLeaf): string {
-  return canonicalJson({ path: leaf.path, salt: leaf.salt, value: leaf.value });
+  validateLeaf(leaf);
+  return `{"path":${JSON.stringify(leaf.path)},"salt":${JSON.stringify(leaf.salt)},"value":${canonicalMerkleJson(leaf.value)}}`;
 }
 
 /** Leaf hash = SHA-256(0x00 || canonicalLeafData) */
@@ -65,6 +97,7 @@ export async function hashMerkleLeaf(leaf: MerkleLeaf): Promise<Uint8Array> {
 
 /** Node hash = SHA-256(0x01 || left || right) — urutan anak TIDAK diurutkan (sesuai RFC 6962). */
 export async function hashMerkleNode(left: Uint8Array, right: Uint8Array): Promise<Uint8Array> {
+  if (left.byteLength !== 32 || right.byteLength !== 32) throw new Error('Hash node Merkle harus 32 byte.');
   const preimage = new Uint8Array(1 + left.length + right.length);
   preimage[0] = MERKLE_NODE_PREFIX;
   preimage.set(left, 1);
@@ -74,7 +107,11 @@ export async function hashMerkleNode(left: Uint8Array, right: Uint8Array): Promi
 
 /** Urutkan leaf berdasarkan path (leksikografis) agar pemilihan pohon deterministik. */
 export function sortLeavesByPath(leaves: MerkleLeaf[]): MerkleLeaf[] {
-  return [...leaves].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const sorted = [...leaves].sort((a, b) => compareUtf8(a.path, b.path));
+  for (let index = 1; index < sorted.length; index++) {
+    if (sorted[index - 1].path === sorted[index].path) throw new Error(`Path Merkle duplikat: ${sorted[index].path}`);
+  }
+  return sorted;
 }
 
 /**
@@ -116,6 +153,7 @@ export async function computeMerkleRoot(leaves: MerkleLeaf[]): Promise<string> {
  */
 export async function merkleAuditPath(leafHashes: Uint8Array[], index: number): Promise<MerkleProofStep[]> {
   if (index < 0 || index >= leafHashes.length) throw new Error('Index leaf di luar jangkauan.');
+  if (leafHashes.some((hash) => hash.byteLength !== 32)) throw new Error('Hash leaf Merkle harus 32 byte.');
   const levels = await buildMerkleLevels(leafHashes);
   const path: MerkleProofStep[] = [];
   let idx = index;

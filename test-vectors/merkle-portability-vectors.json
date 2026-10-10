@@ -1,0 +1,11 @@
+{
+  "version": "pandu-merkle-v1",
+  "description": "Unicode UTF-8 path ordering and fixed-point decimal string vector",
+  "leaves": [
+    { "path": "\uD800\uDC00", "salt": "1111111111111111111111111111111111111111111111111111111111111111", "value": "12.30" },
+    { "path": "\uE000", "salt": "2222222222222222222222222222222222222222222222222222222222222222", "value": "12.30" },
+    { "path": "z", "salt": "3333333333333333333333333333333333333333333333333333333333333333", "value": "12.30" }
+  ],
+  "sortedPaths": ["z", "\uE000", "\uD800\uDC00"],
+  "root": "0x6ac8ca51c87e2973de14f3fb8947cd13b721e64d0c791feaf7bfdf010c7f9f8d"
+}

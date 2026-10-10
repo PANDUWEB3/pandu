@@ -24,6 +24,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const vectors = JSON.parse(
   readFileSync(path.resolve(__dirname, '../../test-vectors/merkle-selective-disclosure-vectors.json'), 'utf8')
 );
+const portabilityVector = JSON.parse(
+  readFileSync(path.resolve(__dirname, '../../test-vectors/merkle-portability-vectors.json'), 'utf8')
+);
 
 const sha256 = (...parts: Uint8Array[]) =>
   new Uint8Array(createHash('sha256').update(Buffer.concat(parts.map((p) => Buffer.from(p)))).digest());
@@ -173,5 +176,27 @@ describe('Paket selective disclosure', () => {
     const wrongRoot = await computeMerkleRoot([...leaves, { path: 'batchRef', value: 'X', salt: '44'.repeat(32) }]);
     const pkg2 = await buildDisclosurePackage(leaves, ['inspection.result']);
     expect(await verifyDisclosurePackage(pkg2, wrongRoot)).toBe(false);
+  });
+});
+
+describe('Kanonisasi lintas bahasa dan input leaf', () => {
+  it('menolak path duplikat, salt salah ukuran dan angka bukan integer aman', async () => {
+    const leaf: MerkleLeaf = { path: 'measurement.value', value: '12.34', salt: 'ab'.repeat(32) };
+    expect(() => sortLeavesByPath([leaf, leaf])).toThrow(/duplikat/);
+    await expect(hashMerkleLeaf({ ...leaf, salt: 'ab' })).rejects.toThrow(/32 byte/);
+    expect(() => canonicalLeafData({ ...leaf, value: 12.34 })).toThrow(/integer aman/);
+  });
+
+  it('mengurutkan path berdasarkan byte UTF-8, bukan unit code UTF-16', () => {
+    const leaves: MerkleLeaf[] = [
+      { path: '\u{10000}', value: 'astral', salt: '11'.repeat(32) },
+      { path: '\uE000', value: 'bmp', salt: '22'.repeat(32) },
+    ];
+    expect(sortLeavesByPath(leaves).map((leaf) => leaf.path)).toEqual(['\uE000', '\u{10000}']);
+  });
+
+  it('cocok dengan vector Unicode dan fixed-point string lintas runtime', async () => {
+    expect(sortLeavesByPath(portabilityVector.leaves).map((leaf) => leaf.path)).toEqual(portabilityVector.sortedPaths);
+    expect(await computeMerkleRoot(portabilityVector.leaves)).toBe(portabilityVector.root);
   });
 });

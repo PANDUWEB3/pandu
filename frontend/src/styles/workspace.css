@@ -1523,3 +1523,9 @@ html[data-theme='light'] .p-workspace .p-rail-submenu { background:#fffaf6;color
 .p-workspace .p-nav-scroll{justify-content:space-evenly;padding:8px 0}
 .p-workspace .p-top-brand .p-brand,.p-workspace .p-top-brand .p-brand *{text-decoration:none!important}
 @media(max-width:767px){.p-workspace .p-sidebar{top:auto;bottom:8px;padding:6px 8px;gap:0}.p-workspace .p-nav-scroll{padding:0;justify-content:space-around}}
+/* Compact rail card centered vertically, with its height fitted to the menu. */
+.p-workspace .p-sidebar{top:50%;bottom:auto;transform:translateY(-50%);height:auto;max-height:calc(100vh - 24px);justify-content:center;gap:12px;overflow:visible}
+.p-workspace .p-nav-scroll{flex:0 0 auto;justify-content:flex-start;gap:8px;padding:0}
+.p-workspace .ws-org{margin:0}
+.p-workspace .p-top-brand>a,.p-workspace .p-top-brand>a span{text-decoration:none!important}
+@media(max-width:767px){.p-workspace .p-sidebar{top:auto;bottom:8px;height:62px;max-height:62px;transform:none}.p-workspace .p-nav-scroll{flex:1;justify-content:space-around;gap:0}}

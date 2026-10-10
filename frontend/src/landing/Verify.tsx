@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { FileSearch, Search, ArrowRight, CircleHelp, LockKeyhole, LoaderCircle, ShieldCheck, ChevronLeft, ArrowUpRight, BadgeCheck, CheckCircle2, XCircle } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useI18n } from '../i18n';
+import { verifyProofOnchain, type OnchainProofStatus } from '../onchain-verification';
 import { Tilt } from './ui';
 import Navbar from './Navbar';
 import Footer from './Footer';
@@ -28,8 +29,6 @@ import {
   type VerifierShareEntryPlain,
   type VerifierShareEntryWrapped,
 } from '../verifier-share';
-
-const VERIFIER_PRIVKEY_STORAGE = 'PANDU.verifier.privateKey';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8787';
 
@@ -168,6 +167,10 @@ type PublicResult = {
   anchoredAt?: number;
   blockNumber?: number | string;
   commitment?: string;
+  proofId?: string;
+  chainId?: number;
+  contractAddress?: string;
+  onchain?: OnchainProofStatus;
   attester?: string;
   relayer?: string;
   revokedAt?: number;
@@ -184,6 +187,7 @@ export function PublicProof({ token }: { token: string }) {
   const [share, setShare] = useState<VerifierSharePayload | null>(null);
   const [shareNotice, setShareNotice] = useState('');
   const [verifierPublicKeyHex, setVerifierPublicKeyHex] = useState('');
+  const [verifierPrivateKeyHex, setVerifierPrivateKeyHex] = useState('');
   const [verificationReport, setVerificationReport] = useState<{
     success: boolean;
     fileName?: string;
@@ -225,7 +229,7 @@ export function PublicProof({ token }: { token: string }) {
         }
         let unwrapped = false;
         if (share.mode === 'ecies') {
-          let privHex = localStorage.getItem(VERIFIER_PRIVKEY_STORAGE) || '';
+          let privHex = verifierPrivateKeyHex;
           if (!privHex) {
             privHex =
               (window.prompt(
@@ -382,6 +386,36 @@ export function PublicProof({ token }: { token: string }) {
       .then(async response => { 
         const body = await response.json(); 
         if (!response.ok && !body.status) throw new Error(body.message || 'Bukti belum dapat dimuat.'); 
+        if (body.proofId && body.commitment && body.contractAddress && body.chainId) {
+          const chainId = Number(import.meta.env.VITE_PANDU_CHAIN_ID || 421614);
+          const registryAddress = import.meta.env.VITE_PANDU_REGISTRY_ADDRESS || '0x2e6aE365874D3b06dA896980D1CFc817Be873EE9';
+          const legacyRegistryAddress = import.meta.env.VITE_PANDU_LEGACY_REGISTRY_ADDRESS || '';
+          const onchain = await verifyProofOnchain({
+            proofId: body.proofId,
+            chainId: Number(body.chainId),
+            contractAddress: body.contractAddress,
+            commitment: body.commitment,
+            legacy: Boolean(body.legacy),
+          }, {
+            rpcUrl: import.meta.env.VITE_PANDU_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc',
+            chainId,
+            registryAddress,
+            legacyRegistryAddress,
+          });
+          body.onchain = onchain;
+          body.status = onchain.status;
+          body.legacy = body.legacy || onchain.status.startsWith('LEGACY_');
+          body.attester = onchain.attester;
+          body.relayer = onchain.relayer || body.relayer;
+          body.anchoredAt = onchain.timestamp;
+          body.message = onchain.status === 'VERIFIED'
+            ? 'Commitment cocok dengan record v2 di chain dan proof masih valid.'
+            : onchain.status === 'REVOKED'
+              ? 'Proof v2 telah dicabut di chain.'
+              : onchain.status.startsWith('LEGACY_')
+                ? 'Legacy v1: tanda tangan penerbit tidak diperiksa oleh kontrak.'
+                : 'Record chain tidak cocok dengan commitment atau tidak valid.';
+        }
         return body; 
       })
       .then(data => { if (live) setResult(data); })
@@ -403,8 +437,9 @@ export function PublicProof({ token }: { token: string }) {
       const pair = await generateVerifierKeyPair();
       const privateKeyHex = await exportVerifierPrivateKey(pair.privateKey);
       const publicKeyHex = await exportVerifierPublicKey(pair.publicKey);
-      localStorage.setItem(VERIFIER_PRIVKEY_STORAGE, privateKeyHex);
+      setVerifierPrivateKeyHex(privateKeyHex);
       setVerifierPublicKeyHex(publicKeyHex);
+      setShareNotice('Kunci privat hanya tersedia selama sesi halaman ini. Simpan sendiri dengan aman bila dibutuhkan kembali.');
       if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(publicKeyHex);
       setShareNotice('Kunci verifikator dibuat. Kunci publik disalin ke clipboard — kirimkan ke penerbit.');
     } catch (err: any) {
@@ -468,6 +503,18 @@ export function PublicProof({ token }: { token: string }) {
                   <p className="opacity-90 mt-1 font-medium">{result.message}</p>
                 </div>
               </div>
+
+              {result.onchain && (
+                <section aria-label="Status bukti on-chain" className="bg-canvas border border-black/5 dark:border-white/5 rounded-3xl p-6 shadow-sm space-y-2 text-sm">
+                  <h3 className="font-bold text-base">Lapisan verifikasi on-chain</h3>
+                  <p>Tanda tangan penerbit: <strong>{result.onchain.issuerSignature === 'not-checked-legacy' ? 'Legacy v1, tanpa tanda tangan penerbit' : 'Diterima saat anchor v2'}</strong></p>
+                  <p>Status cabut: <strong>{result.onchain.revoked ? 'Dicabut' : 'Belum dicabut'}</strong></p>
+                  <p>Commitment lokal cocok dengan evidenceHash: <strong>{result.onchain.commitmentMatches ? 'Ya' : 'Tidak'}</strong></p>
+                  <p>isValid(): <strong>{result.onchain.isValid === null ? 'Tidak tersedia di v1' : String(result.onchain.isValid)}</strong></p>
+                  <p>verify(): <strong>{result.onchain.verify === null ? 'Tidak tersedia di v1' : String(result.onchain.verify)}</strong></p>
+                  {result.onchain.attester && <p>Attester: <code className="break-all">{result.onchain.attester}</code></p>}
+                </section>
+              )}
 
               {result.proof && (
                 <div className="bg-canvas border border-black/5 dark:border-white/5 rounded-3xl p-6 sm:p-8 shadow-sm">

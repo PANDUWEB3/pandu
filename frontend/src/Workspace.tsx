@@ -9,6 +9,7 @@ import TiltedCard from './components/TiltedCard';
 import ModernSelect from './components/ModernSelect';
 import CountUp from './landing/reactbits/CountUp';
 import { motion, AnimatePresence } from 'motion/react';
+import { encryptFileClient, deriveKeyFromWallet, deriveKeyFromPasskey } from './crypto';
 
 declare global { interface Window { ethereum?: { request(args: { method: string; params?: unknown[] }): Promise<unknown> } } }
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8787';
@@ -425,24 +426,20 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
     if (!window.ethereum) { setFailure(w.msg.mmMissing); return; }
     
     await perform(async () => {
-      // 1. Derive encryption key from wallet signature
-      const accounts = await window.ethereum!.request({ method: 'eth_requestAccounts' }) as string[];
-      const signature = await window.ethereum!.request({ method: 'personal_sign', params: ['Generate PANDU Encryption Key', accounts[0]] }) as string;
-      const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(signature), 'PBKDF2', false, ['deriveKey']);
-      const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: new TextEncoder().encode('PANDU'), iterations: 100000, hash: 'SHA-256' }, keyMaterial, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+      // 1. Derivasi kunci enkripsi dari wallet atau passkey
+      let key: CryptoKey;
+      if (window.ethereum) {
+        const accounts = (await window.ethereum.request({ method: 'eth_requestAccounts' })) as string[];
+        key = await deriveKeyFromWallet(accounts[0]);
+      } else {
+        key = await deriveKeyFromPasskey('PANDU');
+      }
       
-      // 2. Encrypt the file
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const fileBytes = await file.arrayBuffer();
-      const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, fileBytes);
-      
-      // Concat IV and ciphertext
-      const payload = new Uint8Array(iv.length + ciphertext.byteLength);
-      payload.set(iv);
-      payload.set(new Uint8Array(ciphertext), iv.length);
+      // 2. Enkripsi berkas menggunakan AES-GCM (IV 12-byte + ciphertext)
+      const { payload, plaintextSha256 } = await encryptFileClient(file, key);
       const encryptedBlob = new Blob([payload], { type: 'application/octet-stream' });
       
-      // 3. Upload ciphertext to backend (which uploads to Pinata)
+      // 3. Unggah ciphertext ke backend (yang meneruskan ke Pinata IPFS)
       const formData = new FormData();
       formData.append('file', encryptedBlob, file.name + '.enc');
       
@@ -462,7 +459,7 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
         original_name: file.name,
         mime_type: 'application/octet-stream',
         byte_size: encryptedBlob.size,
-        sha256: `\\x${body.sha256}`,
+        sha256: `\\x${plaintextSha256}`,
         uploaded_by: session.user.id
       });
       

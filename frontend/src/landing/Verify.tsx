@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { FileSearch, Search, ArrowRight, CircleHelp, LockKeyhole, LoaderCircle, ShieldCheck, ChevronLeft, ArrowUpRight, BadgeCheck } from 'lucide-react';
+import { FileSearch, Search, ArrowRight, CircleHelp, LockKeyhole, LoaderCircle, ShieldCheck, ChevronLeft, ArrowUpRight, BadgeCheck, CheckCircle2, XCircle } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useI18n } from '../i18n';
 import { Tilt } from './ui';
 import Navbar from './Navbar';
 import Footer from './Footer';
+import { decryptFileClient, deriveKeyFromWallet, deriveKeyFromPasskey, computeCanonicalEvidenceHash, sha256Hex } from '../crypto';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8787';
 
@@ -153,33 +154,89 @@ export function PublicProof({ token }: { token: string }) {
   const { t } = useI18n();
   const [result, setResult] = useState<PublicResult | null>(null);
   const [retry, setRetry] = useState(0);
-  const [fileMatchStatus, setFileMatchStatus] = useState<string | null>(null);
-  const [fileMatchTone, setFileMatchTone] = useState<string>('');
+  const [decryptMethod, setDecryptMethod] = useState<'wallet' | 'passkey' | 'plaintext'>('wallet');
+  const [decrypting, setDecrypting] = useState(false);
+  const [verificationReport, setVerificationReport] = useState<{
+    success: boolean;
+    fileName?: string;
+    decryptedSha256?: string;
+    hashMatchedEvidence?: boolean;
+    recomputedEvidenceHash?: string;
+    onchainCommitmentMatch?: boolean;
+    error?: string;
+  } | null>(null);
 
-  async function checkLocalFile(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleDecryptAndVerify(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || !result?.proof) return;
+    setDecrypting(true);
+    setVerificationReport(null);
+
     try {
-      const buf = await file.arrayBuffer();
-      const digestBuf = await crypto.subtle.digest('SHA-256', buf);
-      const hashArray = Array.from(new Uint8Array(digestBuf));
-      const hex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+      const fileBytes = new Uint8Array(await file.arrayBuffer());
+      let decryptedBytes: ArrayBuffer;
+      let decryptedSha256: string;
 
-      const evidenceList: any[] = result?.proof?.evidence || [];
-      const hashList: string[] = result?.proof?.evidenceHashes || [];
-      const matched = evidenceList.some((ev: any) => ev.sha256?.toLowerCase() === hex.toLowerCase()) ||
-                      hashList.some((h: string) => h.toLowerCase() === hex.toLowerCase());
-
-      if (matched) {
-        setFileMatchTone('bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-900/30');
-        setFileMatchStatus(`VALID: Hash berkas "${file.name}" (${hex.slice(0, 16)}...) cocok dengan komitmen on-chain!`);
+      if (decryptMethod === 'plaintext') {
+        decryptedBytes = fileBytes.buffer;
+        decryptedSha256 = await sha256Hex(decryptedBytes);
       } else {
-        setFileMatchTone('bg-red-50 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-900/30');
-        setFileMatchStatus(`MISMATCH: Hash berkas "${file.name}" (${hex.slice(0, 16)}...) tidak cocok dengan bukti ini.`);
+        let key: CryptoKey;
+        if (decryptMethod === 'wallet') {
+          if (!window.ethereum) throw new Error('MetaMask / Web3 provider diperlukan.');
+          const accounts = (await window.ethereum.request({ method: 'eth_requestAccounts' })) as string[];
+          key = await deriveKeyFromWallet(accounts[0]);
+        } else {
+          key = await deriveKeyFromPasskey();
+        }
+
+        const decrypted = await decryptFileClient(fileBytes, key);
+        decryptedBytes = decrypted.decryptedBytes;
+        decryptedSha256 = decrypted.decryptedSha256;
       }
+
+      // 1. Cek kecocokan hash berkas dengan lampiran bukti di canonical snapshot
+      const evidenceList: any[] = result.proof.evidence || [];
+      const hashList: string[] = result.proof.evidenceHashes || [];
+      const hashMatchedEvidence =
+        evidenceList.some((ev: any) => ev.sha256?.toLowerCase() === decryptedSha256.toLowerCase()) ||
+        hashList.some((h: string) => h.toLowerCase() === decryptedSha256.toLowerCase());
+
+      // 2. Rakit ulang Canonical Proof Snapshot
+      const reconstructedSnapshot = {
+        approvedAt: result.proof.approvedAt,
+        batchRef: result.proof.batchRef,
+        canonicalizationVersion: result.proof.canonicalizationVersion || 1,
+        evidence: result.proof.evidence || [],
+        inspection: result.proof.inspection,
+        material: result.proof.material,
+        proofId: result.proof.proofId,
+        salt: result.proof.salt,
+        supplier: result.proof.supplier,
+      };
+
+      // 3. Hitung ulang evidenceHash
+      const recomputedEvidenceHash = await computeCanonicalEvidenceHash(reconstructedSnapshot);
+
+      // 4. Bandingkan dengan on-chain commitment yang disimpan di kontrak
+      const onchainCommitmentMatch =
+        recomputedEvidenceHash.toLowerCase() === (result.commitment || '').toLowerCase();
+
+      setVerificationReport({
+        success: onchainCommitmentMatch && hashMatchedEvidence,
+        fileName: file.name,
+        decryptedSha256,
+        hashMatchedEvidence,
+        recomputedEvidenceHash,
+        onchainCommitmentMatch,
+      });
     } catch (err: any) {
-      setFileMatchTone('bg-red-50 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-900/30');
-      setFileMatchStatus(`Gagal menghitung hash: ${err.message}`);
+      setVerificationReport({
+        success: false,
+        error: err.message || 'Gagal mendekripsi atau memvalidasi berkas.',
+      });
+    } finally {
+      setDecrypting(false);
     }
   }
 
@@ -312,23 +369,123 @@ export function PublicProof({ token }: { token: string }) {
                     ))}
                   </dl>
 
-                  {/* Uji kecocokan berkas (dekripsi lokal) */}
-                  <div className="mt-8 pt-6 border-t border-black/5 dark:border-white/5">
-                    <h4 className="font-bold text-base mb-2 flex items-center gap-2 text-ink">
-                      <ShieldCheck size={18} className="text-brand" />
-                      Uji kecocokan berkas (dekripsi lokal)
-                    </h4>
-                    <p className="text-xs text-ink-soft mb-3 leading-relaxed">
-                      Pilih berkas dokumen/inspeksi hasil dekripsi untuk menghitung SHA-256 langsung di browser dan mencocokkannya dengan komitmen bukti.
-                    </p>
-                    <input
-                      type="file"
-                      onChange={checkLocalFile}
-                      className="block w-full text-xs text-ink-soft file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-brand/10 file:text-brand hover:file:bg-brand/20 cursor-pointer"
-                    />
-                    {fileMatchStatus && (
-                      <div className={`mt-3 p-3 rounded-xl text-xs font-medium border ${fileMatchTone}`}>
-                        {fileMatchStatus}
+                  {/* Dekripsi Klien & Rekonstruksi Canonical Proof */}
+                  <div className="mt-8 pt-6 border-t border-black/5 dark:border-white/5 space-y-4">
+                    <div>
+                      <h4 className="font-bold text-base flex items-center gap-2 text-ink">
+                        <ShieldCheck size={18} className="text-brand" />
+                        Verifikasi Mandiri: Dekripsi & Rekonstruksi Canonical Proof
+                      </h4>
+                      <p className="text-xs text-ink-soft mt-1 leading-relaxed">
+                        Dekripsi ciphertext secara lokal di browser, rakit ulang objek canonical proof secara deterministik, dan bandingkan <code>evidenceHash</code> langsung dengan komitmen <code>verify()</code> on-chain.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setDecryptMethod('wallet')}
+                        className={`px-3 py-1.5 rounded-lg font-semibold border transition-all ${
+                          decryptMethod === 'wallet'
+                            ? 'bg-brand text-white border-brand'
+                            : 'bg-canvas text-ink border-black/10 dark:border-white/10 hover:bg-mist'
+                        }`}
+                      >
+                        Kunci Wallet (MetaMask)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDecryptMethod('passkey')}
+                        className={`px-3 py-1.5 rounded-lg font-semibold border transition-all ${
+                          decryptMethod === 'passkey'
+                            ? 'bg-brand text-white border-brand'
+                            : 'bg-canvas text-ink border-black/10 dark:border-white/10 hover:bg-mist'
+                        }`}
+                      >
+                        Passkey / WebAuthn
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDecryptMethod('plaintext')}
+                        className={`px-3 py-1.5 rounded-lg font-semibold border transition-all ${
+                          decryptMethod === 'plaintext'
+                            ? 'bg-brand text-white border-brand'
+                            : 'bg-canvas text-ink border-black/10 dark:border-white/10 hover:bg-mist'
+                        }`}
+                      >
+                        Berkas Sudah Terdekripsi
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="block text-xs font-semibold text-ink-soft uppercase tracking-wider">
+                        {decryptMethod === 'plaintext'
+                          ? 'Pilih Berkas Asli (Hasil Dekripsi)'
+                          : 'Pilih Berkas Ciphertext (.enc)'}
+                      </label>
+                      <input
+                        type="file"
+                        disabled={decrypting}
+                        onChange={handleDecryptAndVerify}
+                        className="block w-full text-xs text-ink-soft file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-brand/10 file:text-brand hover:file:bg-brand/20 cursor-pointer"
+                      />
+                    </div>
+
+                    {decrypting && (
+                      <div className="flex items-center gap-2 text-xs text-brand py-2">
+                        <LoaderCircle size={16} className="animate-spin" />
+                        <span>Mendekripsi berkas dan merekonstruksi canonical snapshot...</span>
+                      </div>
+                    )}
+
+                    {verificationReport && (
+                      <div
+                        className={`p-4 rounded-2xl text-xs space-y-2 border ${
+                          verificationReport.success
+                            ? 'bg-green-50 text-green-800 border-green-200 dark:bg-green-950/20 dark:text-green-300 dark:border-green-900/30'
+                            : 'bg-red-50 text-red-800 border-red-200 dark:bg-red-950/20 dark:text-red-300 dark:border-red-900/30'
+                        }`}
+                      >
+                        {verificationReport.error ? (
+                          <div className="flex items-center gap-2 font-bold text-sm">
+                            <XCircle size={16} className="text-red-600 shrink-0" />
+                            <span>{verificationReport.error}</span>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="flex items-center gap-2 font-bold text-sm mb-2">
+                              {verificationReport.success ? (
+                                <>
+                                  <CheckCircle2 size={18} className="text-green-600 shrink-0" />
+                                  <span>VERIFIKASI PENUH BERHASIL (100% Cocok On-Chain)</span>
+                                </>
+                              ) : (
+                                <>
+                                  <XCircle size={18} className="text-red-600 shrink-0" />
+                                  <span>VERIFIKASI GAGAL: Terdeteksi Ketidakcocokan</span>
+                                </>
+                              )}
+                            </div>
+                            <div className="grid grid-cols-1 gap-1.5 text-[11px] font-mono break-all">
+                              <div><strong>Berkas:</strong> {verificationReport.fileName}</div>
+                              <div><strong>SHA-256 Berkas Terdekripsi:</strong> {verificationReport.decryptedSha256}</div>
+                              <div>
+                                <strong>Kesesuaian Lampiran (CID/Hash):</strong>{' '}
+                                {verificationReport.hashMatchedEvidence ? '✓ Cocok dengan lampiran snapshot' : '✗ Tidak ditemukan di bukti ini'}
+                              </div>
+                              <div><strong>Canonical evidenceHash Dihitung:</strong> {verificationReport.recomputedEvidenceHash}</div>
+                              <div><strong>On-chain Commitment di Kontrak:</strong> {result.commitment}</div>
+                              <div>
+                                <strong>Status On-chain:</strong>{' '}
+                                {verificationReport.onchainCommitmentMatch && result.status === 'VERIFIED'
+                                  ? '✓ VALID & IDENTIK (verify() = true)'
+                                  : result.status === 'REVOKED'
+                                  ? '✗ DICABUT (Revoked)'
+                                  : '✗ MISMATCH'}
+                              </div>
+                            </div>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>

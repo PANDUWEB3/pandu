@@ -7,9 +7,10 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  Contract, JsonRpcProvider, Wallet, getAddress, id, keccak256, toUtf8Bytes, verifyMessage
+  Contract, Interface, JsonRpcProvider, Wallet, getAddress, id, keccak256, toUtf8Bytes, verifyMessage
 } from 'ethers';
 import { createClient } from '@supabase/supabase-js';
+import { z } from 'zod';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -71,6 +72,39 @@ const abi = [
   'event ProofAnchored(bytes32 indexed proofId,bytes32 indexed batchRef,bytes32 evidenceHash,address indexed attester,address relayer,uint64 timestamp)',
   'event ProofRevoked(bytes32 indexed proofId,address indexed revoker,bytes32 reasonHash,uint64 timestamp)',
 ];
+const registryInterface = new Interface(abi);
+
+// Zod schemas untuk validasi ketat input
+const AnchorBodySchema = z.object({
+  signature: z.string().min(10, 'Signature tidak valid'),
+  attester: z.string().regex(/^0x[0-9a-fA-F]{40}$/, 'Alamat attester harus format hex 20 byte'),
+  deadline: z.union([z.number(), z.string(), z.bigint()]),
+});
+
+const RevokeBodySchema = z.object({
+  reasonHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'reasonHash harus format bytes32 hex'),
+  signature: z.string().min(10).optional(),
+  deadline: z.union([z.number(), z.string(), z.bigint()]).optional(),
+});
+
+const CreateProofBodySchema = z.object({
+  inspectionId: z.string().uuid('ID inspeksi harus berupa UUID valid'),
+  evidence: z.array(z.object({
+    cid: z.string().min(1),
+    sha256: z.string().min(1),
+  })).optional(),
+});
+
+const InviteMemberBodySchema = z.object({
+  email: z.string().email('Format email tidak valid'),
+  role: z.enum(['admin', 'qc', 'qa', 'auditor']),
+});
+
+const SubmitInspectionBodySchema = z.object({
+  actual: z.number({ invalid_type_error: 'Masukkan angka hasil pengukuran.' }),
+  notes: z.string().max(500, 'Catatan maksimal 500 karakter').optional(),
+});
+
 
 app.use(cors({ origin: (requestOrigin, callback) => callback(null, !requestOrigin || allowedOrigins.has(requestOrigin)), credentials: false }));
 app.use(express.json({ limit: '1mb' }));
@@ -182,7 +216,17 @@ function buildRevokeTypedData({ chainId: cId, contractAddress, proofId: pid, rea
  * Kembalikan string atau null jika tidak dikenal.
  */
 function mapContractError(error) {
-  const msg = error?.shortMessage || error?.message || '';
+  let errName = error?.revert?.name || '';
+  if (!errName) {
+    try {
+      const data = error?.data || error?.info?.error?.data || error?.error?.data;
+      if (data && typeof data === 'string' && data.startsWith('0x')) {
+        const parsed = registryInterface.parseError(data);
+        if (parsed) errName = parsed.name;
+      }
+    } catch (_) {}
+  }
+  const msg = `${errName} ${error?.shortMessage || ''} ${error?.message || ''}`;
   if (msg.includes('NotIssuer')) return 'Attester tidak memiliki ISSUER_ROLE. Minta admin grant ISSUER_ROLE terlebih dahulu.';
   if (msg.includes('SignatureExpired')) return 'Tanda tangan penerbit sudah kedaluwarsa. Minta tanda tangan baru.';
   if (msg.includes('InvalidSignature')) return 'Tanda tangan tidak valid. Pastikan penerbit menandatangani typed data EIP-712 v2 yang benar.';
@@ -358,10 +402,9 @@ app.post('/api/organizations/:orgId/invitations', requireSupabaseUser, async (re
   try {
     const { orgId } = req.params;
     const actorRole = await requireOrgRole(req.authUser.id, orgId, ['owner', 'admin']);
-    const email = String(req.body?.email || '').trim().toLowerCase();
-    const role = String(req.body?.role || 'qc').trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Masukkan alamat email yang valid.' });
-    if (!['admin', 'qc', 'qa', 'auditor'].includes(role)) return res.status(400).json({ error: 'Pilih peran admin, QC, QA, atau auditor.' });
+    const parsed = InviteMemberBodySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Input undangan tidak valid.' });
+    const { email, role } = parsed.data;
     if (role === 'admin' && actorRole !== 'owner') return res.status(403).json({ error: 'Hanya owner yang dapat mengundang admin.' });
     let existingUser = null;
     for (let page = 1; page <= 20 && !existingUser; page += 1) {
@@ -439,7 +482,9 @@ app.post('/api/organizations/:orgId/proofs', requireSupabaseUser, async (req, re
     if (!process.env.PUBLIC_TOKEN_SECRET || process.env.PUBLIC_TOKEN_SECRET.length < 32) return res.status(503).json({ error: 'PUBLIC_TOKEN_SECRET server belum diatur (minimal 32 karakter).' });
     const { orgId } = req.params;
     await requireOrgRole(req.authUser.id, orgId, ['owner', 'admin', 'qa']);
-    const { inspectionId, evidence } = req.body || {};
+    const parsed = CreateProofBodySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Input bukti tidak valid.' });
+    const { inspectionId, evidence } = parsed.data;
     const { inspection, batch, material, supplier } = await getBatchDetails(orgId, inspectionId);
     if (inspection.status !== 'approved' || inspection.result_summary?.result !== 'PASS') return res.status(409).json({ error: 'Bukti hanya dapat dibuat dari inspeksi PASS yang sudah disetujui QA.' });
     const { data: existing } = await supabaseAdmin.from('quality_proofs').select('*').eq('organization_id', orgId).eq('inspection_id', inspectionId).maybeSingle();
@@ -529,8 +574,9 @@ app.post('/api/proofs/:proofRowId/anchor', requireSupabaseUser, async (req, res)
   if (!supabaseAdmin) return res.status(503).json({ error: 'Supabase server belum dikonfigurasi.' });
   let proof;
   try {
-    const { signature, attester, deadline } = req.body || {};
-    if (!signature || !attester || !deadline) return res.status(400).json({ error: 'Tanda tangan EIP-712 penerbit (signature, attester, deadline) diperlukan.' });
+    const parsed = AnchorBodySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Tanda tangan EIP-712 penerbit (signature, attester, deadline) diperlukan.' });
+    const { signature, attester, deadline } = parsed.data;
     if (!checkRateLimit(`anchor:${req.authUser.id}`)) return res.status(429).json({ error: 'Terlalu banyak permintaan. Coba lagi nanti.' });
 
     const { data, error } = await supabaseAdmin.from('quality_proofs').select('*').eq('id', req.params.proofRowId).maybeSingle();
@@ -577,8 +623,9 @@ app.post('/api/proofs/:proofRowId/anchor', requireSupabaseUser, async (req, res)
 app.post('/api/proofs/:proofRowId/revoke', requireSupabaseUser, async (req, res) => {
   if (!supabaseAdmin) return res.status(503).json({ error: 'Supabase server belum dikonfigurasi.' });
   try {
-    const { reasonHash, signature, deadline } = req.body || {};
-    if (!reasonHash) return res.status(400).json({ error: 'Alasan revoke (reasonHash) diperlukan.' });
+    const parsed = RevokeBodySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Alasan revoke (reasonHash) diperlukan.' });
+    const { reasonHash, signature, deadline } = parsed.data;
     if (!checkRateLimit(`revoke:${req.authUser.id}`)) return res.status(429).json({ error: 'Terlalu banyak permintaan. Coba lagi nanti.' });
 
     const { data: proof, error } = await supabaseAdmin.from('quality_proofs').select('*').eq('id', req.params.proofRowId).maybeSingle();
@@ -693,10 +740,11 @@ app.post('/api/demo/tamper', async (_req, res) => {
 });
 
 app.post('/api/inspection/submit', async (req, res) => {
-  const actual = Number(req.body.actual);
-  if (!Number.isFinite(actual)) return res.status(400).json({ error: 'Masukkan angka hasil pengukuran.' });
+  const parsed = SubmitInspectionBodySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Masukkan angka hasil pengukuran.' });
+  const { actual, notes } = parsed.data;
   state.inspection.actual = actual;
-  state.inspection.notes = String(req.body.notes || '').slice(0, 500);
+  state.inspection.notes = (notes || '').slice(0, 500);
   state.inspection.status = actual >= state.inspection.min && actual <= state.inspection.max ? 'SUBMITTED' : 'FAILED';
   state.inspection.submittedAt = new Date().toISOString();
   state.inspection.approvedAt = null;

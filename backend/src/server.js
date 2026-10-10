@@ -439,16 +439,15 @@ app.post('/api/organizations/:orgId/proofs', requireSupabaseUser, async (req, re
     if (!process.env.PUBLIC_TOKEN_SECRET || process.env.PUBLIC_TOKEN_SECRET.length < 32) return res.status(503).json({ error: 'PUBLIC_TOKEN_SECRET server belum diatur (minimal 32 karakter).' });
     const { orgId } = req.params;
     await requireOrgRole(req.authUser.id, orgId, ['owner', 'admin', 'qa']);
-    const { inspectionId } = req.body || {};
+    const { inspectionId, evidence } = req.body || {};
     const { inspection, batch, material, supplier } = await getBatchDetails(orgId, inspectionId);
     if (inspection.status !== 'approved' || inspection.result_summary?.result !== 'PASS') return res.status(409).json({ error: 'Bukti hanya dapat dibuat dari inspeksi PASS yang sudah disetujui QA.' });
     const { data: existing } = await supabaseAdmin.from('quality_proofs').select('*').eq('organization_id', orgId).eq('inspection_id', inspectionId).maybeSingle();
     if (existing) return res.json({ proof: existing });
-    const { data: evidence, error: evidenceError } = await supabaseAdmin.from('evidence_files').select('sha256').eq('organization_id', orgId).eq('inspection_id', inspectionId);
-    if (evidenceError) throw evidenceError;
     const proofRowId = randomUUID();
     const publicId = `PANDU-${randomBytes(8).toString('hex').toUpperCase()}`;
     const publicToken = createHmac('sha256', process.env.PUBLIC_TOKEN_SECRET).update(proofRowId).digest('base64url');
+    const salt = randomBytes(32).toString('hex');
     const snapshot = {
       canonicalizationVersion: 1,
       proofId: publicId,
@@ -456,7 +455,8 @@ app.post('/api/organizations/:orgId/proofs', requireSupabaseUser, async (req, re
       material,
       supplier,
       inspection: { checks: inspection.result_summary.checks, result: inspection.result_summary.result },
-      evidenceHashes: (evidence || []).map((item) => String(item.sha256).replace(/^\\x/, '')).sort(),
+      evidence: (evidence || []).map((item) => ({ cid: item.cid, sha256: String(item.sha256).replace(/^\\x/, '') })).sort((a, b) => a.cid.localeCompare(b.cid)),
+      salt,
       approvedAt: inspection.reviewed_at,
     };
     const commitmentValue = `0x${sha256Hex(canonicalJson(snapshot))}`;
@@ -480,6 +480,49 @@ app.get('/api/proofs/:proofRowId/share', requireSupabaseUser, async (req, res) =
     const token = createHmac('sha256', process.env.PUBLIC_TOKEN_SECRET).update(proof.id).digest('base64url');
     res.json({ url: `${origin}/verify/${token}` });
   } catch (error) { res.status(403).json({ error: error.message || 'Akses bukti ditolak.' }); }
+});
+
+app.get('/api/proofs/:proofRowId/sign-payload', requireSupabaseUser, async (req, res) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: 'Supabase server belum dikonfigurasi.' });
+  try {
+    const { data: proof, error } = await supabaseAdmin.from('quality_proofs').select('*').eq('id', req.params.proofRowId).maybeSingle();
+    if (error) throw error;
+    if (!proof) return res.status(404).json({ error: 'Bukti tidak ditemukan.' });
+    const { batch } = await getBatchDetails(proof.organization_id, proof.inspection_id);
+    const domain = {
+      name: "PANDUQualityRegistry",
+      version: "2",
+      chainId: Number(chainId),
+      verifyingContract: process.env.PANDU_REGISTRY_ADDRESS
+    };
+    res.json({
+      domain,
+      proofId: proofIdBytes(proof.public_id),
+      batchRef: dbBatchRef(proof.organization_id, batch.batch_code),
+      evidenceHash: `0x${bytes32Hex(proof.commitment)}`
+    });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.get('/api/proofs/:proofRowId/revoke-payload', requireSupabaseUser, async (req, res) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: 'Supabase server belum dikonfigurasi.' });
+  try {
+    const { data: proof, error } = await supabaseAdmin.from('quality_proofs').select('*').eq('id', req.params.proofRowId).maybeSingle();
+    if (error) throw error;
+    if (!proof) return res.status(404).json({ error: 'Bukti tidak ditemukan.' });
+    const domain = {
+      name: "PANDUQualityRegistry",
+      version: "2",
+      chainId: Number(chainId),
+      verifyingContract: process.env.PANDU_REGISTRY_ADDRESS
+    };
+    const reasonText = req.query.reason || "Pencabutan oleh pengguna";
+    res.json({
+      domain,
+      proofId: proofIdBytes(proof.public_id),
+      reasonHash: id(reasonText)
+    });
+  } catch (error) { res.status(400).json({ error: error.message }); }
 });
 
 app.post('/api/proofs/:proofRowId/anchor', requireSupabaseUser, async (req, res) => {
@@ -666,16 +709,46 @@ app.post('/api/inspection/submit', async (req, res) => {
 
 app.post('/api/evidence', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Pilih file bukti terlebih dahulu.' });
-  const bytes = await readFile(req.file.path);
-  const item = { id: randomUUID(), name: path.basename(req.file.originalname), mimeType: req.file.mimetype, size: req.file.size, sha256: createHash('sha256').update(bytes).digest('hex'), addedAt: new Date().toISOString(), storagePath: req.file.path };
-  state.evidence.push(item); state.proof = null;
-  if (state.inspection.status === 'APPROVED') {
-    state.inspection.status = 'SUBMITTED';
-    state.inspection.submittedAt = new Date().toISOString();
-    state.inspection.approvedAt = null;
+  try {
+    const bytes = await readFile(req.file.path);
+    const sha256Hash = createHash('sha256').update(bytes).digest('hex');
+    
+    // Upload to Pinata
+    const formData = new FormData();
+    formData.append('file', new Blob([bytes]), req.file.originalname);
+    
+    const pinataRes = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${process.env.PINATA_JWT}` },
+      body: formData
+    });
+    
+    if (!pinataRes.ok) throw new Error('Gagal mengunggah ke Pinata');
+    const pinataData = await pinataRes.json();
+    const cid = pinataData.IpfsHash;
+    
+    // Delete local temp file
+    await import('node:fs/promises').then(fs => fs.unlink(req.file.path).catch(() => {}));
+    
+    const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+    if (token) {
+      // Authenticated request (Supabase mode)
+      return res.status(201).json({ cid, sha256: sha256Hash, name: req.file.originalname });
+    }
+
+    // Local demo mode
+    const item = { id: randomUUID(), name: path.basename(req.file.originalname), mimeType: req.file.mimetype, size: req.file.size, sha256: sha256Hash, addedAt: new Date().toISOString(), cid };
+    state.evidence.push(item); state.proof = null;
+    if (state.inspection.status === 'APPROVED') {
+      state.inspection.status = 'SUBMITTED';
+      state.inspection.submittedAt = new Date().toISOString();
+      state.inspection.approvedAt = null;
+    }
+    audit('EVIDENCE_UPLOADED'); await persist();
+    res.status(201).json(summarize());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-  audit('EVIDENCE_UPLOADED'); await persist();
-  res.status(201).json(summarize());
 });
 
 // Local demo only: no identity/access layer is configured, so keep this API loopback-bound.

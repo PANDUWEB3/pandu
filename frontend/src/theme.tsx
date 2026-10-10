@@ -6,9 +6,9 @@ const KEY = 'pandu-theme';
 type Ctx = { mode: Mode; toggle: () => void };
 const ThemeContext = createContext<Ctx | null>(null);
 
-/** Light is always the default; the user's explicit choice is remembered. */
+/** Dark is the default; the user's explicit choice is remembered. */
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [mode, setMode] = useState<Mode>(() => (localStorage.getItem(KEY) === 'dark' ? 'dark' : 'light'));
+  const [mode, setMode] = useState<Mode>(() => (localStorage.getItem(KEY) === 'light' ? 'light' : 'dark'));
   useEffect(() => {
     document.documentElement.dataset.theme = mode;
     document.documentElement.style.colorScheme = mode;

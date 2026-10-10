@@ -1,0 +1,23 @@
+{
+  "name": "pandu-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node -c src/server.js",
+    "test": "node --test",
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "setup:testnet": "node scripts/setup-testnet.mjs",
+    "deploy:testnet": "node scripts/deploy-testnet.mjs",
+    "deploy:arbitrum-one": "node scripts/deploy-arbitrum-one.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "ethers": "^6.15.0",
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
+    "zod": "^4.6.5"
+  }
+}

@@ -31,12 +31,12 @@ const variants = {
   onDark: 'bg-pure/10 text-pure ring-1 ring-inset ring-pure/25 hover:bg-pure/20 hover:-translate-y-0.5',
 } as const;
 
-export function Button({ children, href, variant = 'primary', size = 'md', className = '' }: {
-  children: ReactNode; href: string; variant?: keyof typeof variants; size?: 'sm' | 'md'; className?: string;
+export function Button({ children, href, variant = 'primary', size = 'md', className = '', onClick }: {
+  children: ReactNode; href: string; variant?: keyof typeof variants; size?: 'sm' | 'md'; className?: string; onClick?: (event: React.MouseEvent<HTMLAnchorElement>) => void;
 }) {
   const pad = size === 'sm' ? 'px-4 py-2 text-sm' : 'px-6 py-3.5 text-[15px]';
   return (
-    <a href={href} className={`group inline-flex items-center justify-center gap-2 rounded-full font-semibold transition-all duration-300 active:translate-y-0 active:scale-[0.98] ${pad} ${variants[variant]} ${className}`}>
+    <a href={href} onClick={onClick} className={`group inline-flex items-center justify-center gap-2 rounded-full font-semibold transition-all duration-300 active:translate-y-0 active:scale-[0.98] ${pad} ${variants[variant]} ${className}`}>
       {children}
     </a>
   );

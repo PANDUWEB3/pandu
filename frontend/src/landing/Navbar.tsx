@@ -4,7 +4,7 @@ import { useI18n } from '../i18n';
 import { Button, Logo } from './ui';
 import { Controls } from './Controls';
 
-export default function Navbar() {
+export default function Navbar({ onGetStarted }: { onGetStarted?: () => void } = {}) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
@@ -36,7 +36,7 @@ export default function Navbar() {
           <div className="hidden items-center gap-3 lg:flex">
             <Controls />
             <span className="h-6 w-px bg-gray-200" aria-hidden="true" />
-            <Button href="/login" size="sm">{t.nav.start}</Button>
+            <Button href={onGetStarted ? '#login' : '/login'} onClick={e => { if (onGetStarted) { e.preventDefault(); onGetStarted(); } }} size="sm">{t.nav.start}</Button>
           </div>
           <button className="grid h-10 w-10 cursor-pointer place-items-center rounded-full text-ink transition-colors hover:bg-mist lg:hidden" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-controls="mobile-menu" aria-label={open ? t.nav.menuClose : t.nav.menuOpen}>
             {open ? <X size={22} /> : <Menu size={22} />}
@@ -52,7 +52,7 @@ export default function Navbar() {
               ))}
               <li className="mt-1 flex items-center justify-between gap-2 px-1 py-2">
                 <Controls />
-                <Button href="/login" size="sm">{t.nav.start}</Button>
+                <Button href={onGetStarted ? '#login' : '/login'} onClick={e => { if (onGetStarted) { e.preventDefault(); onGetStarted(); } setOpen(false); }} size="sm">{t.nav.start}</Button>
               </li>
             </ul>
           </div>

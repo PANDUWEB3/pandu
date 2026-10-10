@@ -3,7 +3,7 @@ import BlurText from './reactbits/BlurText';
 import { useI18n } from '../i18n';
 import { Button, Reveal } from './ui';
 
-export default function FinalCTA() {
+export default function FinalCTA({ onGetStarted = () => { window.location.href = '/login'; } }: { onGetStarted?: () => void } = {}) {
   const { t, lang } = useI18n();
   return (
     <section className="px-3 py-20 sm:px-5 sm:py-28">
@@ -17,7 +17,7 @@ export default function FinalCTA() {
         <Reveal delay={0.2}>
           <p className="mx-auto mt-6 max-w-md text-lg text-gray-300 [color:#d1d5db]">{t.cta.sub}</p>
           <div className="mt-9 flex flex-col justify-center gap-3 sm:flex-row">
-            <Button href="/login">{t.hero.cta1} <ArrowRight size={18} className="transition-transform duration-300 group-hover:translate-x-1" /></Button>
+            <Button href="#login" onClick={e => { e.preventDefault(); onGetStarted(); }}>{t.hero.cta1} <ArrowRight size={18} className="transition-transform duration-300 group-hover:translate-x-1" /></Button>
             <Button href="/verify" variant="onDark"><FileSearch size={18} /> {t.hero.cta2}</Button>
           </div>
         </Reveal>

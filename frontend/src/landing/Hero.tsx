@@ -66,7 +66,7 @@ function SampleCertificate() {
   );
 }
 
-export default function Hero() {
+export default function Hero({ onGetStarted = () => { window.location.href = '/login'; } }: { onGetStarted?: () => void } = {}) {
   const { t, lang } = useI18n();
   const { mode } = useTheme();
   return (
@@ -92,7 +92,7 @@ export default function Hero() {
           <Reveal delay={0.25}>
             <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-soft">{t.hero.sub}</p>
             <div className="mt-9 flex flex-col gap-3 sm:flex-row">
-              <Button href="/login">{t.hero.cta1} <ArrowRight size={18} className="transition-transform duration-300 group-hover:translate-x-1" /></Button>
+              <Button href="#login" onClick={e => { e.preventDefault(); onGetStarted(); }}>{t.hero.cta1} <ArrowRight size={18} className="transition-transform duration-300 group-hover:translate-x-1" /></Button>
               <Button href="/verify" variant="secondary"><FileSearch size={18} /> {t.hero.cta2}</Button>
             </div>
             <p className="mt-5 text-sm text-gray-500">{t.hero.privacy}</p>

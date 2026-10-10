@@ -6,6 +6,7 @@ import { supabase } from '../supabase';
 import Navbar from './Navbar';
 import Footer from './Footer';
 import { Logo } from './ui';
+import { requestWallet, signInWithWallet, startGoogleLogin } from './auth';
 
 function MetaMaskIcon({ className }: { className?: string }) {
   return (
@@ -24,10 +25,9 @@ export default function Login() {
   const [walletLoading, setWalletLoading] = useState(false);
 
   async function googleLogin() {
-    if (!supabase) { setNote(t.login.notConfigured); return; }
     setNote(t.login.connecting);
-    const { error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: `${window.location.origin}/workspace`, queryParams: { prompt: 'select_account' } } });
-    if (error) setNote(`${t.login.failed}${error.message}`);
+    try { await startGoogleLogin(supabase); }
+    catch (error: any) { setNote(`${t.login.failed}${error.message || t.login.notConfigured}`); }
   }
 
   async function ssoLogin(e: React.FormEvent) {
@@ -41,19 +41,14 @@ export default function Login() {
   }
 
   async function connectWallet() {
-    if (typeof window === 'undefined' || !(window as any).ethereum) {
-      setNote(t.login.mmMissing);
-      return;
-    }
     setNote('');
     setWalletLoading(true);
     try {
-      const accounts = await (window as any).ethereum.request({ method: 'eth_requestAccounts' });
-      if (accounts && accounts.length > 0) {
-        setWallet(accounts[0]);
-      }
+      const account = await requestWallet({ id: 'metamask', label: 'MetaMask', getProvider: () => window.ethereum });
+      setWallet(account);
     } catch (err: any) {
-      if (err.code === 4001) setNote(t.login.mmRejected);
+      if (err.code === 4001 || err.message === 'WALLET_REJECTED') setNote(t.login.mmRejected);
+      else if (err.message === 'WALLET_NOT_INSTALLED') setNote(t.login.mmMissing);
       else setNote(err.message || 'Error connecting wallet');
     } finally {
       setWalletLoading(false);
@@ -61,20 +56,11 @@ export default function Login() {
   }
 
   async function continueWithWallet() {
-    if (!supabase) { setNote(t.login.notConfigured); return; }
     setNote(t.login.connecting || 'Connecting...');
     setWalletLoading(true);
     try {
-      const { error } = await supabase.auth.signInWithWeb3({
-        chain: 'ethereum',
-        statement: 'Sign in to PANDU Workspace',
-        options: { url: window.location.origin }
-      });
-      if (error) {
-        setNote(error.message);
-      } else {
-        window.location.href = '/workspace';
-      }
+      await signInWithWallet(supabase, { id: 'metamask', label: 'MetaMask', getProvider: () => window.ethereum }, wallet);
+      window.location.href = '/workspace';
     } catch (err: any) {
       setNote(err.message || 'Error authenticating with wallet');
     } finally {

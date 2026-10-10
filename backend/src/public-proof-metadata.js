@@ -4,7 +4,7 @@ export function publicProofMetadata(proof, { proofId, legacy }) {
     ? proof.commitment.replace(/^\\x/, '').replace(/^0x/, '')
     : Buffer.from(proof.commitment).toString('hex');
   return {
-    status: proof.anchor_status === 'confirmed' || proof.anchor_status === 'revoked' ? 'ANCHORED' : 'PENDING',
+    status: proof.anchor_status === 'revoked' ? 'REVOKED' : proof.anchor_status === 'confirmed' ? 'ANCHORED' : 'PENDING',
     proofId,
     chainId: Number(proof.chain_id),
     contractAddress: proof.contract_address,

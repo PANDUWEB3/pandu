@@ -1,40 +1,51 @@
 import 'dotenv/config';
 import express from 'express';
-import cors from 'cors';
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  Contract, Interface, JsonRpcProvider, Wallet, getAddress, id, keccak256, toUtf8Bytes, verifyMessage
+  Contract, Interface, Wallet, getAddress, id, keccak256, toUtf8Bytes, verifyMessage
 } from 'ethers';
-import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
-import { assertProductionEnv, parseTrustProxy } from './env-guard.js';
-import { createCiphertextRouter, createPinataCiphertextStorage } from './ciphertext-router.js';
+import { parseTrustProxy } from './env-guard.js';
+import { createCiphertextRouter } from './routes/evidence.js';
+import { createHealthRouter } from './routes/health.js';
+import { createPublicProofRouter } from './routes/public-proofs.js';
+import { createPinataCiphertextStore } from './services/pinata-ciphertext-store.js';
 import { registerDemoRoutes } from './demo-route-guard.js';
-import { publicProofMetadata } from './public-proof-metadata.js';
+import { loadRuntimeConfig, getAllowedOrigins } from './config/runtime.js';
+import { createHttpSecurity } from './middleware/http-security.js';
+import { requestLogger } from './middleware/request-logger.js';
+import { errorHandler } from './middleware/error-handler.js';
+import { createRequireSupabaseUser } from './middleware/supabase-auth.js';
+import { chainIdForName, createConfiguredProvider, createProviderForChain } from './chain/provider.js';
+import { createSupabaseAdmin } from './db/supabase-admin.js';
+import { MemoryRelayerJobStore, RelayerTransactionQueue, RedisWalletLock, SupabaseRelayerJobStore } from './services/relayer-queue.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-// Wajib di produksi: TRUST_PROXY + REDIS_URL (lihat PANDU_Deployment_Runbook_v1.0.md)
-assertProductionEnv(process.env);
-app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
-const port = Number(process.env.PORT || 8787);
+const runtimeConfig = loadRuntimeConfig(process.env);
+const allowedOrigins = getAllowedOrigins(runtimeConfig);
+app.set('trust proxy', parseTrustProxy(runtimeConfig.TRUST_PROXY));
+app.use(...createHttpSecurity({ allowedOrigins, production: runtimeConfig.NODE_ENV === 'production' }));
+app.use(requestLogger);
+const port = runtimeConfig.PORT;
 const dataFile = path.resolve(__dirname, '..', process.env.DATA_FILE || './data/demo-state.json');
-const chainName = process.env.PANDU_CHAIN || 'arbitrum-sepolia';
-const chainId = chainName === 'arbitrum-one' ? 42161n : 421614n;
+const chainName = runtimeConfig.PANDU_CHAIN;
+const chainId = BigInt(chainIdForName(chainName));
 const chainLabel = chainName === 'arbitrum-one' ? 'Arbitrum One' : 'Arbitrum Sepolia';
 const explorerBase = chainName === 'arbitrum-one' ? 'https://arbiscan.io' : 'https://sepolia.arbiscan.io';
-const rpcUrl = chainName === 'arbitrum-one' ? (process.env.ARBITRUM_ONE_RPC_URL || 'https://arb1.arbitrum.io/rpc') : (process.env.ARBITRUM_SEPOLIA_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc');
-if (!['arbitrum-sepolia', 'arbitrum-one'].includes(chainName)) throw new Error('PANDU_CHAIN harus arbitrum-sepolia atau arbitrum-one.');
-const origin = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
-const allowedOrigins = new Set([origin, 'http://localhost:5173', 'http://127.0.0.1:5173']);
-const supabaseUrl = process.env.SUPABASE_URL;
-// Prefer Supabase's current server-only secret key; keep legacy service_role
-// support for local environments that have not migrated yet.
-const supabaseServiceKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
-const supabaseAdmin = supabaseUrl && supabaseServiceKey ? createClient(supabaseUrl, supabaseServiceKey, { auth: { persistSession: false, autoRefreshToken: false } }) : null;
+const origin = runtimeConfig.FRONTEND_ORIGIN || [...allowedOrigins][0];
+const supabaseAdmin = createSupabaseAdmin(runtimeConfig);
+const relayerQueue = new RelayerTransactionQueue({
+  store: supabaseAdmin ? new SupabaseRelayerJobStore(supabaseAdmin) : new MemoryRelayerJobStore(),
+  lockManager: runtimeConfig.REDIS_URL ? new RedisWalletLock({ url: runtimeConfig.REDIS_URL }) : null,
+  maxGasLimit: BigInt(runtimeConfig.RELAYER_MAX_GAS_LIMIT),
+  lowBalanceWei: BigInt(runtimeConfig.RELAYER_LOW_BALANCE_WEI),
+  receiptTimeoutMs: runtimeConfig.RELAYER_TX_TIMEOUT_MS,
+  confirmations: 2,
+});
 
 // ABI v2 – PANDUQualityRegistry v2 (TIDAK kompatibel dengan v1)
 const abi = [
@@ -115,7 +126,6 @@ const SubmitInspectionBodySchema = z.object({
 });
 
 
-app.use(cors({ origin: (requestOrigin, callback) => callback(null, !requestOrigin || allowedOrigins.has(requestOrigin)), credentials: false }));
 app.use(express.json({ limit: '1mb' }));
 const seed = () => ({
   organization: 'PT PANDU Nusantara',
@@ -154,18 +164,22 @@ function persist() {
   return writeQueue;
 }
 function audit(action, actor = 'DEMO USER') { state.audit.unshift({ action, actor, at: new Date().toISOString() }); }
-function getProvider() { return new JsonRpcProvider(rpcUrl, Number(chainId)); }
-function getProviderForChain(idValue) {
-  const id = Number(idValue);
-  if (id === 421614) return new JsonRpcProvider(process.env.ARBITRUM_SEPOLIA_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc', id);
-  if (id === 42161) return new JsonRpcProvider(process.env.ARBITRUM_ONE_RPC_URL || 'https://arb1.arbitrum.io/rpc', id);
-  throw new Error(`Chain ID ${id} tidak didukung.`);
-}
+function getProvider() { return createConfiguredProvider(chainName, runtimeConfig); }
+function getProviderForChain(idValue) { return createProviderForChain(idValue, runtimeConfig); }
 function chainLabelFor(idValue) { return Number(idValue) === 42161 ? 'Arbitrum One' : 'Arbitrum Sepolia'; }
 function explorerFor(idValue) { return Number(idValue) === 42161 ? 'https://arbiscan.io' : 'https://sepolia.arbiscan.io'; }
 function getRegistry(signerOrProvider) {
   if (!process.env.PANDU_REGISTRY_ADDRESS) throw new Error('Kontrak belum dikonfigurasi. Deploy kontrak lalu isi PANDU_REGISTRY_ADDRESS.');
   return new Contract(getAddress(process.env.PANDU_REGISTRY_ADDRESS), abi, signerOrProvider);
+}
+async function submitRegistryTransaction({ proofId, operation, registry, wallet, methodName, args }) {
+  const method = registry[methodName];
+  if (typeof method !== 'function' || typeof method.estimateGas !== 'function') throw new Error('Registry method is unavailable.');
+  return relayerQueue.submit({
+    proofId, operation, wallet, provider: wallet.provider, contractAddress: registry.target,
+    estimateGas: () => method.estimateGas(...args),
+    send: (overrides) => method(...args, overrides),
+  });
 }
 function proofIdBytes(idString) { return keccak256(toUtf8Bytes(`PANDU:${idString}`)); }
 function batchRefBytes(idString) { return keccak256(toUtf8Bytes(`PANDU:${state.organization}:${idString}`)); }
@@ -238,25 +252,6 @@ function mapContractError(error) {
   return null;
 }
 
-/** Kirim transaksi dengan retry eksponen (maks 3x, untuk RPC timeout / underpriced gas). */
-async function sendWithRetry(txFn, label = 'transaksi', maxRetries = 3) {
-  let lastError;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try { return await txFn(); }
-    catch (err) {
-      lastError = err;
-      // Jangan retry untuk contract revert atau user rejection
-      if (err?.code === 'CALL_EXCEPTION' || err?.code === 'ACTION_REJECTED') throw err;
-      if (attempt < maxRetries) {
-        const delay = 1000 * 2 ** (attempt - 1);
-        console.warn(`[${label}] Percobaan ${attempt}/${maxRetries} gagal, retry dalam ${delay}ms:`, err?.shortMessage || err?.message);
-        await new Promise((r) => setTimeout(r, delay));
-      }
-    }
-  }
-  throw lastError;
-}
-
 // Rate Limiter: In-Memory dengan TTL Cleanup + Adapter Redis opsional via REDIS_URL
 function getClientIp(req) {
   return req.ip || req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket?.remoteAddress || '127.0.0.1';
@@ -285,32 +280,40 @@ function buildPublicProof(source = state) {
     approvedAt: source.inspection.approvedAt
   };
 }
+function logRouteFailure(event, error) {
+  const candidate = String(error?.code || '');
+  const code = /^[A-Z0-9_]{1,64}$/.test(candidate) ? candidate : 'UNKNOWN';
+  console.error(JSON.stringify({ level: 'error', event, code }));
+}
 function commitment(snapshot = buildPublicProof()) { return `0x${createHash('sha256').update(Buffer.from(JSON.stringify(snapshot), 'utf8')).digest('hex')}`; }
 function summarize() {
   return { ...state, proofArchive: undefined, evidence: state.evidence.map(({ storagePath: _storagePath, ...item }) => ({ ...item, downloadUrl: `/api/evidence/${encodeURIComponent(item.id)}` })), proofHistory: (state.proofArchive || []).map(({ id, commitment: digest, anchor: savedAnchor, snapshot, createdAt }) => ({ id, commitment: digest, anchor: savedAnchor, createdAt: createdAt || snapshot.approvedAt, batchRef: snapshot.batchRef })), publicProof: state.proof ? buildPublicProof() : null, configured: Boolean(process.env.RELAYER_PRIVATE_KEY && process.env.PANDU_REGISTRY_ADDRESS) };
 }
 
-app.get('/api/health', async (_req, res) => {
-  try {
-    const provider = getProvider();
-    const network = await provider.getNetwork();
-    const blockNumber = await provider.getBlockNumber();
-    res.json({ ok: true, chainId: Number(network.chainId), expectedChainId: Number(chainId), chainLabel, explorerBase, blockNumber, contractAddress: process.env.PANDU_REGISTRY_ADDRESS || null, configured: Boolean(process.env.RELAYER_PRIVATE_KEY && process.env.PANDU_REGISTRY_ADDRESS), writesEnabled: chainName !== 'arbitrum-one' || process.env.ENABLE_MAINNET_ANCHOR === 'true', supabaseConfigured: Boolean(supabaseAdmin) });
-  } catch (error) { res.status(503).json({ ok: false, error: error.message }); }
-});
+app.use(createHealthRouter({
+  getProvider,
+  expectedChainId: Number(chainId),
+  chainLabel,
+  supabaseConfigured: Boolean(supabaseAdmin),
+  registryConfigured: Boolean(process.env.PANDU_REGISTRY_ADDRESS),
+  checkRelayerStore: async () => {
+    if (!supabaseAdmin) return false;
+    const { error } = await supabaseAdmin.from('relayer_jobs').select('idempotency_key', { head: true, count: 'exact' });
+    if (error) return false;
+    return !relayerQueue.lockManager || relayerQueue.lockManager.ready();
+  },
+}));
+app.use('/api/public', createPublicProofRouter({
+  supabaseAdmin,
+  tokenSecret: runtimeConfig.PUBLIC_TOKEN_SECRET,
+  legacyRegistryAddress,
+  proofIdBytes,
+}));
 
-async function requireSupabaseUser(req, res, next) {
-  if (!supabaseAdmin) return res.status(503).json({ error: 'Supabase server belum dikonfigurasi.' });
-  const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
-  if (!token) return res.status(401).json({ error: 'Sesi login diperlukan.' });
-  const { data, error } = await supabaseAdmin.auth.getUser(token);
-  if (error || !data.user) return res.status(401).json({ error: 'Sesi login tidak valid atau kedaluwarsa.' });
-  req.authUser = data.user;
-  next();
-}
+const requireSupabaseUser = createRequireSupabaseUser(supabaseAdmin);
 
 app.use('/api/evidence', createCiphertextRouter({
-  storage: createPinataCiphertextStorage({ jwt: process.env.PINATA_JWT }),
+  storage: createPinataCiphertextStore({ jwt: process.env.PINATA_JWT }),
   requireAuth: requireSupabaseUser,
 }));
 
@@ -333,7 +336,7 @@ app.post('/api/wallet/link/challenge', requireSupabaseUser, async (req, res) => 
     }).select('id').single();
     if (error) throw error;
     res.json({ challengeId: data.id, message, expiresAt });
-  } catch (error) { res.status(400).json({ error: error.message || 'Gagal membuat permintaan taut wallet.' }); }
+  } catch (error) { logRouteFailure('wallet_challenge_failed', error); res.status(400).json({ error: 'Gagal membuat permintaan taut wallet.' }); }
 });
 
 app.post('/api/wallet/link/verify', requireSupabaseUser, async (req, res) => {
@@ -365,7 +368,7 @@ app.post('/api/wallet/link/verify', requireSupabaseUser, async (req, res) => {
     const { error: linkError } = existingWallet ? { error: null } : await supabaseAdmin.from('user_wallets').insert({ user_id: req.authUser.id, chain_namespace: 'eip155', chain_id: challenge.chain_id, address: address.toLowerCase(), verified_at: new Date().toISOString() });
     if (linkError) throw linkError;
     res.json({ address, chainId: challenge.chain_id, linked: true });
-  } catch (error) { res.status(400).json({ error: error.message || 'Verifikasi tanda tangan gagal.' }); }
+  } catch (error) { logRouteFailure('wallet_verification_failed', error); res.status(400).json({ error: 'Verifikasi tanda tangan gagal.' }); }
 });
 
 function hexBytes32(value) { return `\\x${String(value).replace(/^0x/, '')}`; }
@@ -393,7 +396,7 @@ app.get('/api/organizations/:orgId/members', requireSupabaseUser, async (req, re
       return { ...member, email: data.user?.email || null, name: data.user?.user_metadata?.full_name || null };
     }));
     res.json({ members: users });
-  } catch (error) { res.status(403).json({ error: error.message || 'Daftar anggota tidak dapat dibuka.' }); }
+  } catch (error) { logRouteFailure('organization_members_read_failed', error); res.status(403).json({ error: 'Daftar anggota tidak dapat dibuka.' }); }
 });
 
 app.post('/api/organizations/:orgId/invitations', requireSupabaseUser, async (req, res) => {
@@ -417,13 +420,13 @@ app.post('/api/organizations/:orgId/invitations', requireSupabaseUser, async (re
       if (current) return res.status(409).json({ error: current.status === 'active' ? 'Email ini sudah menjadi anggota organisasi.' : 'Undangan untuk email ini masih menunggu diterima.' });
     }
     const invitation = existingUser ? { user: existingUser } : await supabaseAdmin.auth.admin.inviteUserByEmail(email, { redirectTo: `${origin}/workspace` });
-    if (invitation.error) return res.status(409).json({ error: invitation.error.message || 'Undangan tidak dapat dikirim.' });
+    if (invitation.error) { logRouteFailure('organization_invite_delivery_failed', invitation.error); return res.status(409).json({ error: 'Undangan tidak dapat dikirim.' }); }
     const memberStatus = existingUser ? 'active' : 'invited';
     const { data: membership, error: membershipError } = await supabaseAdmin.from('organization_members').insert({ organization_id: orgId, user_id: invitation.data?.user?.id || invitation.user?.id, role, status: memberStatus, invited_by: req.authUser.id }).select('organization_id,user_id,role,status,joined_at,invited_by').single();
     if (membershipError) return res.status(502).json({ error: 'Email undangan terkirim, tetapi akses organisasi belum tersimpan. Hubungi admin sebelum mengirim undangan ulang.' });
     await supabaseAdmin.from('audit_events').insert({ organization_id: orgId, actor_id: req.authUser.id, action: existingUser ? 'organization.member_added' : 'organization.member_invited', entity_type: 'organization_member', entity_id: null, details: { email, role } });
     res.status(201).json({ member: { ...membership, email }, message: existingUser ? 'Akses anggota ditambahkan.' : 'Email undangan dikirim.' });
-  } catch (error) { res.status(403).json({ error: error.message || 'Undangan tidak dapat dibuat.' }); }
+  } catch (error) { logRouteFailure('organization_invite_failed', error); res.status(403).json({ error: 'Undangan tidak dapat dibuat.' }); }
 });
 
 app.patch('/api/organizations/:orgId/members/:userId', requireSupabaseUser, async (req, res) => {
@@ -440,7 +443,7 @@ app.patch('/api/organizations/:orgId/members/:userId', requireSupabaseUser, asyn
     if (error) throw error;
     await supabaseAdmin.from('audit_events').insert({ organization_id: orgId, actor_id: req.authUser.id, action: 'organization.member_role_changed', entity_type: 'organization_member', details: { user_id: userId, old_role: current.role, new_role: role } });
     res.json({ member: updated });
-  } catch (error) { res.status(403).json({ error: error.message || 'Peran anggota tidak dapat diubah.' }); }
+  } catch (error) { logRouteFailure('organization_member_role_update_failed', error); res.status(403).json({ error: 'Peran anggota tidak dapat diubah.' }); }
 });
 
 app.delete('/api/organizations/:orgId/members/:userId', requireSupabaseUser, async (req, res) => {
@@ -455,7 +458,7 @@ app.delete('/api/organizations/:orgId/members/:userId', requireSupabaseUser, asy
     if (error) throw error;
     await supabaseAdmin.from('audit_events').insert({ organization_id: orgId, actor_id: req.authUser.id, action: 'organization.member_access_revoked', entity_type: 'organization_member', details: { user_id: userId, role: member.role } });
     res.json({ ok: true });
-  } catch (error) { res.status(403).json({ error: error.message || 'Akses anggota tidak dapat dicabut.' }); }
+  } catch (error) { logRouteFailure('organization_member_revoke_failed', error); res.status(403).json({ error: 'Akses anggota tidak dapat dicabut.' }); }
 });
 async function getBatchDetails(orgId, inspectionId) {
   const { data: inspection, error: inspectionError } = await supabaseAdmin.from('inspections').select('id,batch_id,organization_id,status,result_summary,measurements,specification_snapshot,reviewer_id,reviewed_at').eq('id', inspectionId).eq('organization_id', orgId).maybeSingle();
@@ -524,7 +527,7 @@ app.post('/api/organizations/:orgId/proofs', requireSupabaseUser, async (req, re
     if (error) throw error;
     await supabaseAdmin.from('audit_events').insert({ organization_id: orgId, actor_id: req.authUser.id, action: 'quality_proof.created', entity_type: 'quality_proof', entity_id: proof.id });
     res.status(201).json({ proof, verificationUrl: `${origin}/verify/${publicToken}` });
-  } catch (error) { res.status(400).json({ error: error.message || 'Gagal membuat bukti PANDU.' }); }
+  } catch (error) { logRouteFailure('proof_create_failed', error); res.status(400).json({ error: 'Gagal membuat bukti PANDU.' }); }
 });
 
 app.get('/api/proofs/:proofRowId/share', requireSupabaseUser, async (req, res) => {
@@ -538,7 +541,7 @@ app.get('/api/proofs/:proofRowId/share', requireSupabaseUser, async (req, res) =
     await requireOrgRole(req.authUser.id, proof.organization_id, ['owner', 'admin', 'qc', 'qa', 'auditor']);
     const token = createHmac('sha256', process.env.PUBLIC_TOKEN_SECRET).update(proof.id).digest('base64url');
     res.json({ url: `${origin}/verify/${token}` });
-  } catch (error) { res.status(403).json({ error: error.message || 'Akses bukti ditolak.' }); }
+  } catch (error) { logRouteFailure('proof_share_failed', error); res.status(403).json({ error: 'Akses bukti ditolak.' }); }
 });
 
 app.get('/api/proofs/:proofRowId/sign-payload', requireSupabaseUser, async (req, res) => {
@@ -561,7 +564,7 @@ app.get('/api/proofs/:proofRowId/sign-payload', requireSupabaseUser, async (req,
       evidenceHash: `0x${bytes32Hex(proof.commitment)}`,
       snapshot: proof.public_snapshot,
     });
-  } catch (error) { res.status(400).json({ error: error.message }); }
+  } catch (error) { logRouteFailure('proof_sign_payload_failed', error); res.status(400).json({ error: 'Payload tanda tangan tidak tersedia.' }); }
 });
 
 app.get('/api/proofs/:proofRowId/revoke-payload', requireSupabaseUser, async (req, res) => {
@@ -582,7 +585,7 @@ app.get('/api/proofs/:proofRowId/revoke-payload', requireSupabaseUser, async (re
       proofId: proofIdBytes(proof.public_id),
       reasonHash: id(reasonText)
     });
-  } catch (error) { res.status(400).json({ error: error.message }); }
+  } catch (error) { logRouteFailure('proof_revoke_payload_failed', error); res.status(400).json({ error: 'Payload pencabutan tidak tersedia.' }); }
 });
 
 app.post('/api/proofs/:proofRowId/anchor', requireSupabaseUser, async (req, res) => {
@@ -631,8 +634,10 @@ app.post('/api/proofs/:proofRowId/anchor', requireSupabaseUser, async (req, res)
     const refHash = dbBatchRef(proof.organization_id, batch.batch_code);
     const digest = `0x${bytes32Hex(proof.commitment)}`;
     
-    const tx = await sendWithRetry(() => registry.anchorProof(idHash, refHash, digest, attester, deadline, signature), 'anchorProof');
-    const receipt = await tx.wait(2);
+    const { tx, receipt } = await submitRegistryTransaction({
+      proofId: idHash, operation: 'anchor', registry, wallet, methodName: 'anchorProof',
+      args: [idHash, refHash, digest, attester, deadline, signature],
+    });
     if (!receipt || receipt.status !== 1) throw new Error('Transaksi belum berhasil dikonfirmasi di jaringan.');
     const confirmed = await registry.getProof(idHash);
     if (confirmed.evidenceHash.toLowerCase() !== digest.toLowerCase() || confirmed.batchRef.toLowerCase() !== refHash.toLowerCase() || confirmed.revoked) throw new Error('Konfirmasi blockchain tidak cocok dengan bukti tersimpan.');
@@ -641,9 +646,11 @@ app.post('/api/proofs/:proofRowId/anchor', requireSupabaseUser, async (req, res)
     await supabaseAdmin.from('audit_events').insert({ organization_id: proof.organization_id, actor_id: req.authUser.id, action: 'quality_proof.anchored', entity_type: 'quality_proof', entity_id: proof.id, details: { chain_id: Number(chainId), transaction_hash: tx.hash } });
     res.json({ proof: updated, explorerUrl: `${explorerBase}/tx/${tx.hash}`, network: chainLabel });
   } catch (error) {
-    if (proof?.id) await supabaseAdmin.from('quality_proofs').update({ anchor_status: 'failed' }).eq('id', proof.id).eq('anchor_status', 'pending');
+    const keepPending = ['RELAYER_TX_STUCK', 'RELAYER_JOB_IN_PROGRESS', 'RELAYER_JOB_RECONCILIATION_REQUIRED', 'RELAYER_NONCE_LOCK_UNAVAILABLE'].includes(error?.code);
+    if (proof?.id) await supabaseAdmin.from('quality_proofs').update({ anchor_status: keepPending ? 'pending' : 'failed' }).eq('id', proof.id).eq('anchor_status', 'pending');
     const customMsg = mapContractError(error);
-    res.status(502).json({ error: customMsg || error.shortMessage || error.message || 'Anchor gagal.' });
+    logRouteFailure('proof_anchor_failed', error);
+    res.status(502).json({ error: customMsg || 'Anchor gagal diproses.', code: error?.code || 'ANCHOR_FAILED' });
   }
 });
 
@@ -691,14 +698,19 @@ app.post('/api/proofs/:proofRowId/revoke', requireSupabaseUser, async (req, res)
     let transactionHash = proof.revoke_transaction_hash || null;
     let blockNumber = null;
     if (!anchored.revoked) {
-      let tx;
+      let tx; let receipt;
       if (signature && deadline) {
-        tx = await sendWithRetry(() => registry.revokeProofWithSig(proofHash, reasonHash, deadline, signature), 'revokeProofWithSig');
+        ({ tx, receipt } = await submitRegistryTransaction({
+          proofId: proofHash, operation: 'revoke', registry, wallet, methodName: 'revokeProofWithSig',
+          args: [proofHash, reasonHash, deadline, signature],
+        }));
       } else {
         // Fallback for admin or publisher revoking directly
-        tx = await sendWithRetry(() => registry.revokeProof(proofHash, reasonHash), 'revokeProof');
+        ({ tx, receipt } = await submitRegistryTransaction({
+          proofId: proofHash, operation: 'revoke', registry, wallet, methodName: 'revokeProof',
+          args: [proofHash, reasonHash],
+        }));
       }
-      const receipt = await tx.wait(2);
       if (!receipt || receipt.status !== 1) throw new Error('Transaksi pencabutan belum terkonfirmasi di jaringan.');
       transactionHash = tx.hash;
       blockNumber = receipt.blockNumber;
@@ -711,46 +723,9 @@ app.post('/api/proofs/:proofRowId/revoke', requireSupabaseUser, async (req, res)
     res.json({ proof: updated, transactionHash, blockNumber, explorerUrl: transactionHash ? `${explorerBase}/tx/${transactionHash}` : null, network: chainLabel });
   } catch (error) {
     const customMsg = mapContractError(error);
-    res.status(502).json({ error: customMsg || error.shortMessage || error.message || 'Pencabutan gagal.' });
+    logRouteFailure('proof_revoke_failed', error);
+    res.status(502).json({ error: customMsg || 'Pencabutan gagal diproses.', code: error?.code || 'REVOKE_FAILED' });
   }
-});
-
-// Resolve a printed batch code (e.g. IOT-000111) to the proof link created at QA approval.
-app.get('/api/public/resolve', async (req, res) => {
-  if (!supabaseAdmin) return res.status(503).json({ status: 'UNAVAILABLE', message: 'Layanan verifikasi Supabase belum dikonfigurasi.' });
-  if (!process.env.PUBLIC_TOKEN_SECRET || process.env.PUBLIC_TOKEN_SECRET.length < 32) return res.status(503).json({ status: 'UNAVAILABLE', message: 'Server verifikasi belum dikonfigurasi.' });
-  const code = String(req.query.code || '').trim();
-  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{1,63}$/.test(code)) return res.status(404).json({ status: 'NOT_FOUND', message: 'Nomor batch tidak ditemukan.' });
-  try {
-    const { data: batches, error: batchError } = await supabaseAdmin.from('batches').select('id').ilike('batch_code', code.replace(/[%_\\]/g, '\\$&'));
-    if (batchError) throw batchError;
-    if (!batches?.length) return res.status(404).json({ status: 'NOT_FOUND', message: 'Nomor batch tidak ditemukan.' });
-    const { data: inspections, error: inspectionError } = await supabaseAdmin.from('inspections').select('id').in('batch_id', batches.map((b) => b.id));
-    if (inspectionError) throw inspectionError;
-    if (!inspections?.length) return res.status(404).json({ status: 'NOT_FOUND', message: 'Batch ini belum punya bukti.' });
-    const { data: proofs, error: proofError } = await supabaseAdmin.from('quality_proofs').select('id,anchor_status,created_at').in('inspection_id', inspections.map((i) => i.id)).order('created_at', { ascending: false });
-    if (proofError) throw proofError;
-    if (!proofs?.length) return res.status(404).json({ status: 'NOT_FOUND', message: 'Batch ini belum punya bukti.' });
-    const proof = proofs.find((p) => p.anchor_status === 'confirmed') || proofs[0];
-    const token = createHmac('sha256', process.env.PUBLIC_TOKEN_SECRET).update(proof.id).digest('base64url');
-    res.json({ token });
-  } catch (error) { res.status(503).json({ status: 'UNAVAILABLE', message: 'Pencarian belum dapat diproses. Coba lagi.', detail: error.shortMessage || error.message }); }
-});
-
-app.get('/api/public/proofs/:token', async (req, res) => {
-  if (!supabaseAdmin) return res.status(503).json({ status: 'UNAVAILABLE', message: 'Layanan verifikasi Supabase belum dikonfigurasi.' });
-  const token = String(req.params.token || '');
-  const byPublicId = /^PANDU-[A-Fa-f0-9]{16}$/.test(token);
-  if (!byPublicId && !/^[A-Za-z0-9_-]{32,80}$/.test(token)) return res.status(404).json({ status: 'NOT_FOUND', message: 'Bukti PANDU tidak ditemukan.' });
-  try {
-    // Return identifiers and hashes only. The browser checks the registry over public RPC.
-    const query = supabaseAdmin.from('quality_proofs').select('public_id,anchor_status,commitment,chain_id,contract_address,transaction_hash');
-    const { data: proof, error } = await (byPublicId ? query.eq('public_id', token.toUpperCase()) : query.eq('public_token_hash', hexBytes32(sha256Hex(token)))).maybeSingle();
-    if (error) throw error;
-    if (!proof) return res.status(404).json({ status: 'NOT_FOUND', message: 'Bukti PANDU tidak ditemukan.' });
-    const legacy = Boolean(legacyRegistryAddress && getAddress(proof.contract_address) === legacyRegistryAddress);
-    res.json(publicProofMetadata(proof, { proofId: proofIdBytes(proof.public_id), legacy }));
-  } catch { res.status(503).json({ status: 'UNAVAILABLE', message: 'Metadata verifikasi belum tersedia. Coba lagi.' }); }
 });
 
 registerDemoRoutes(process.env, () => {
@@ -852,12 +827,11 @@ app.post('/api/anchor', async (_req, res) => {
     if (deadlineNum > now + MAX_DEADLINE_SECONDS + 60) {
       return res.status(400).json({ error: 'Deadline tanda tangan maksimal 15 menit dari waktu saat ini.' });
     }
-    const tx = await sendWithRetry(
-      () => registry.anchorProof(proofId, batchRef, digest, attester, deadline, signature),
-      'anchorProof'
-    );
+    const { tx, receipt } = await submitRegistryTransaction({
+      proofId, operation: 'anchor', registry, wallet, methodName: 'anchorProof',
+      args: [proofId, batchRef, digest, attester, deadline, signature],
+    });
     state.anchor.transactionHash = tx.hash; await persist();
-    const receipt = await tx.wait(1);
     if (!receipt || receipt.status !== 1) throw new Error('Transaksi gagal pada jaringan.');
     const anchored = await registry.getProof(proofId);
     if (anchored.batchRef.toLowerCase() !== batchRef.toLowerCase() || anchored.evidenceHash.toLowerCase() !== digest.toLowerCase() || anchored.revoked) {
@@ -867,12 +841,14 @@ app.post('/api/anchor', async (_req, res) => {
     savedProof.anchor = { ...state.anchor };
     audit('PROOF_ANCHORED', wallet.address); await persist(); res.json(summarize());
   } catch (error) {
-    state.anchor = { ...state.anchor, status: state.anchor.transactionHash ? 'PENDING' : 'FAILED', error: error.shortMessage || error.message };
+    const pending = ['RELAYER_TX_STUCK', 'RELAYER_JOB_IN_PROGRESS', 'RELAYER_JOB_RECONCILIATION_REQUIRED', 'RELAYER_NONCE_LOCK_UNAVAILABLE'].includes(error?.code);
+    state.anchor = { ...state.anchor, status: pending ? 'PENDING' : state.anchor.transactionHash ? 'PENDING' : 'FAILED', error: error?.code || 'ANCHOR_FAILED' };
     const savedProof = state.proofArchive.find((entry) => entry.id === state.proof?.id);
     if (savedProof) savedProof.anchor = { ...state.anchor };
     await persist();
     const customMsg = mapContractError(error);
-    res.status(502).json({ ...summarize(), error: customMsg || error.shortMessage || error.message });
+    logRouteFailure('demo_anchor_failed', error);
+    res.status(502).json({ ...summarize(), error: customMsg || 'Anchor gagal diproses.', code: error?.code || 'ANCHOR_FAILED' });
   }
 });
 
@@ -896,19 +872,19 @@ app.post('/api/revoke', async (req, res) => {
       }
     }
     const reason = reasonHash || id('Pencabutan bukti demo');
-    let tx;
+    let tx; let receipt;
     if (signature && deadline) {
-      tx = await sendWithRetry(
-        () => registry.revokeProofWithSig(proofIdBytes(state.proof.id), reason, deadline, signature),
-        'revokeProofWithSig'
-      );
+      const proofId = proofIdBytes(state.proof.id);
+      ({ tx, receipt } = await submitRegistryTransaction({
+        proofId, operation: 'revoke', registry, wallet, methodName: 'revokeProofWithSig',
+        args: [proofId, reason, deadline, signature],
+      }));
     } else {
-      tx = await sendWithRetry(
-        () => registry.revokeProof(proofIdBytes(state.proof.id), reason),
-        'revokeProof'
-      );
+      const proofId = proofIdBytes(state.proof.id);
+      ({ tx, receipt } = await submitRegistryTransaction({
+        proofId, operation: 'revoke', registry, wallet, methodName: 'revokeProof', args: [proofId, reason],
+      }));
     }
-    const receipt = await tx.wait(1);
     if (!receipt || receipt.status !== 1) throw new Error('Transaksi pencabutan gagal.');
     const proof = await registry.getProof(proofIdBytes(state.proof.id));
     if (!proof.revoked) throw new Error('Status revoke belum terkonfirmasi on-chain.');
@@ -918,7 +894,8 @@ app.post('/api/revoke', async (req, res) => {
     audit('PROOF_REVOKED', wallet.address); await persist(); res.json(summarize());
   } catch (error) {
     const customMsg = mapContractError(error);
-    res.status(502).json({ error: customMsg || error.shortMessage || error.message });
+    logRouteFailure('demo_revoke_failed', error);
+    res.status(502).json({ error: customMsg || 'Pencabutan gagal diproses.', code: error?.code || 'REVOKE_FAILED' });
   }
 });
 
@@ -933,7 +910,8 @@ async function verifyProof(proofId) {
     const status = proof.revoked ? 'REVOKED' : same ? 'VERIFIED' : 'MISMATCH';
     return { status, proof: savedProof.snapshot, commitment: digest, anchoredCommitment: proof.evidenceHash, anchoredAt: Number(proof.timestamp), attester: proof.attester, transactionHash: savedProof.anchor?.transactionHash, blockNumber: savedProof.anchor?.blockNumber, network: chainLabel, explorerUrl: savedProof.anchor?.transactionHash ? `${explorerBase}/tx/${savedProof.anchor.transactionHash}` : null, message: status === 'VERIFIED' ? 'Ringkasan ini sama dengan bukti yang direkam dan belum dicabut.' : status === 'REVOKED' ? 'Bukti ini pernah direkam, tetapi kemudian dicabut.' : 'Ringkasan yang dibuka berbeda dari bukti yang direkam.' };
   } catch (error) {
-    return { status: 'UNAVAILABLE', message: 'Jaringan belum dapat memeriksa bukti. Coba lagi sebentar.', detail: error.shortMessage || error.message };
+    logRouteFailure('demo_proof_verification_failed', error);
+    return { status: 'UNAVAILABLE', message: 'Jaringan belum dapat memeriksa bukti. Coba lagi sebentar.' };
   }
 }
 app.get('/api/verify', async (_req, res) => {
@@ -947,7 +925,7 @@ app.get('/api/verify/:proofId', async (req, res) => {
 });
 });
 
-app.use((error, _req, res, _next) => res.status(400).json({ error: error.message || 'Permintaan tidak valid.' }));
+app.use(errorHandler);
 await mkdir(path.dirname(dataFile), { recursive: true });
 await loadState();
-app.listen(port, '127.0.0.1', () => console.log(`PANDU API listening on http://127.0.0.1:${port}`));
+app.listen(port, '127.0.0.1', () => console.info(JSON.stringify({ level: 'info', event: 'server_started', host: '127.0.0.1', port })));

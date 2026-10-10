@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
-import { createCiphertextRouter, CIPHERTEXT_MIME, MAX_CIPHERTEXT_BYTES } from '../src/ciphertext-router.js';
+import { createCiphertextRouter, CIPHERTEXT_MIME, MAX_CIPHERTEXT_BYTES } from '../src/routes/evidence.js';
 import { webcrypto } from 'node:crypto';
 
 test('local ciphertext upload, fetch, and decrypt roundtrip ignores supplied MIME', async (t) => {

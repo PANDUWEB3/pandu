@@ -5,7 +5,7 @@
  * - NODE_ENV=production WAJIB menyetel TRUST_PROXY (nilai Express: angka hop / true / false)
  *   dan REDIS_URL (rate limiter terdistribusi). Tanpa keduanya, rate limiter per-instance
  *   tidak mencerminkan klien asli dan gagal terkoordinasi antar instance.
- * - RATE_LIMIT_FAIL_CLOSED default TRUE saat NODE_ENV=production.
+ * - RATE_LIMIT_FAIL_CLOSED=true harus dinyatakan eksplisit saat NODE_ENV=production.
  */
 
 /** Default fail-closed: produksi = true, selain itu = false (kecuali di-set eksplisit). */
@@ -26,6 +26,9 @@ export function assertProductionEnv(env = process.env) {
   const missing = [];
   if (env.TRUST_PROXY === undefined || String(env.TRUST_PROXY).trim() === '') missing.push('TRUST_PROXY');
   if (env.REDIS_URL === undefined || String(env.REDIS_URL).trim() === '') missing.push('REDIS_URL');
+  if (String(env.RATE_LIMIT_FAIL_CLOSED || '').trim().toLowerCase() !== 'true') missing.push('RATE_LIMIT_FAIL_CLOSED=true');
+  if (env.CORS_ALLOWED_ORIGINS === undefined || String(env.CORS_ALLOWED_ORIGINS).trim() === '') missing.push('CORS_ALLOWED_ORIGINS');
+  if (String(env.DEMO_ROUTES || '').trim().toLowerCase() === 'true') missing.push('DEMO_ROUTES must be false');
   if (missing.length) {
     throw new Error(
       `Konfigurasi produksi tidak lengkap. Wajib menyetel: ${missing.join(', ')}. ` +

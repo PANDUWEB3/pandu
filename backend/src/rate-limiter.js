@@ -60,9 +60,9 @@ export class RateLimiter {
           connectTimeout: 3000,
         });
         await this.redis.connect();
-        console.log('[RateLimiter] Terhubung ke Redis untuk rate limiting terdistribusi.');
-      } catch (err) {
-        console.warn('[RateLimiter] Gagal koneksi Redis, fallback ke in-memory lokal:', err.message);
+        console.info(JSON.stringify({ level: 'info', event: 'redis_connected', component: 'rate_limiter' }));
+      } catch {
+        console.warn(JSON.stringify({ level: 'warn', event: 'redis_unavailable', component: 'rate_limiter' }));
         this.redis = null;
       }
     }
@@ -78,21 +78,21 @@ export class RateLimiter {
           const redisKey = `pandu:rl:${key}`;
           const count = Number(await this.redis.eval(REDIS_LUA_RATELIMIT, 1, redisKey, limit, windowMs));
           return count <= limit;
-        } catch (err) {
-          console.warn('[RateLimiter] Redis exec error:', err.message);
+        } catch {
+          console.warn(JSON.stringify({ level: 'warn', event: 'redis_request_failed', component: 'rate_limiter' }));
           if (isFailClosed) {
-            console.warn('[RateLimiter] RATE_LIMIT_FAIL_CLOSED aktif: menolak request akibat kegagalan Redis.');
+            console.warn(JSON.stringify({ level: 'warn', event: 'rate_limit_rejected', reason: 'redis_failure' }));
             return false;
           }
         }
       } else {
         if (isFailClosed) {
-          console.warn(`[RateLimiter] RATE_LIMIT_FAIL_CLOSED aktif: Redis status=${this.redis.status}, menolak request.`);
+          console.warn(JSON.stringify({ level: 'warn', event: 'rate_limit_rejected', reason: 'redis_not_ready' }));
           return false;
         }
       }
     } else if (process.env.REDIS_URL && isFailClosed) {
-      console.warn('[RateLimiter] RATE_LIMIT_FAIL_CLOSED aktif: instance Redis tidak terhubung, menolak request.');
+      console.warn(JSON.stringify({ level: 'warn', event: 'rate_limit_rejected', reason: 'redis_unavailable' }));
       return false;
     }
 

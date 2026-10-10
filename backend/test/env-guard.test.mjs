@@ -22,12 +22,12 @@ test('assertProductionEnv: NODE_ENV=production tanpa TRUST_PROXY & REDIS_URL har
 
 test('assertProductionEnv: NODE_ENV=production dengan TRUST_PROXY & REDIS_URL harus lolos', () => {
   assert.deepEqual(
-    assertProductionEnv({ NODE_ENV: 'production', TRUST_PROXY: '1', REDIS_URL: 'redis://localhost:6379' }),
+    assertProductionEnv({ NODE_ENV: 'production', TRUST_PROXY: '1', REDIS_URL: 'redis://localhost:6379', RATE_LIMIT_FAIL_CLOSED: 'true', CORS_ALLOWED_ORIGINS: 'https://pandu.example' }),
     { ok: true, missing: [] }
   );
-  assert.deepEqual(
-    assertProductionEnv({ NODE_ENV: 'production', TRUST_PROXY: 'false', REDIS_URL: 'redis://x', RATE_LIMIT_FAIL_CLOSED: 'false' }),
-    { ok: true, missing: [] }
+  assert.throws(
+    () => assertProductionEnv({ NODE_ENV: 'production', TRUST_PROXY: 'false', REDIS_URL: 'redis://x', RATE_LIMIT_FAIL_CLOSED: 'false', CORS_ALLOWED_ORIGINS: 'https://pandu.example' }),
+    /RATE_LIMIT_FAIL_CLOSED=true/
   );
 });
 

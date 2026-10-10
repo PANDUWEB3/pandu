@@ -57,6 +57,13 @@ describe('verifyProofOnchain', () => {
     expect(d.calls.verify).not.toHaveBeenCalled();
   });
 
+  it('does not label a legacy commitment mismatch as a valid legacy proof', async () => {
+    const legacy = { ...metadata, legacy: true, contractAddress: '0x0000000000000000000000000000000000000003' };
+    const result = await verifyProofOnchain(legacy, { ...config, legacyRegistryAddress: legacy.contractAddress }, deps({ evidenceHash: `0x${'33'.repeat(32)}` }));
+    expect(result.status).toBe('MISMATCH');
+    expect(result.issuerSignature).toBe('not-checked-legacy');
+  });
+
   it('rejects chain and registry configuration mismatches', async () => {
     await expect(verifyProofOnchain(metadata, { ...config, chainId: 1 }, deps())).rejects.toThrow(/Chain ID/);
     await expect(verifyProofOnchain(metadata, { ...config, registryAddress: '0x0000000000000000000000000000000000000003' }, deps())).rejects.toThrow(/Alamat registry/);

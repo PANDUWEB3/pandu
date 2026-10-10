@@ -71,7 +71,7 @@ export async function verifyProofOnchain(
 
   if (metadata.legacy) {
     return {
-      status: revoked ? 'LEGACY_REVOKED' : 'LEGACY_UNSIGNED', commitmentMatches,
+      status: revoked ? 'LEGACY_REVOKED' : commitmentMatches ? 'LEGACY_UNSIGNED' : 'MISMATCH', commitmentMatches,
       isValid: null, verify: null, revoked, issuerSignature: 'not-checked-legacy',
       attester, relayer: null, timestamp,
     };

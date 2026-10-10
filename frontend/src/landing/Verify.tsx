@@ -1,34 +1,10 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { FileSearch, Search, ArrowRight, CircleHelp, LockKeyhole, LoaderCircle, ShieldCheck, ChevronLeft, ArrowUpRight, BadgeCheck, CheckCircle2, XCircle } from 'lucide-react';
-import { QRCodeSVG } from 'qrcode.react';
+import { FileSearch, Search, ArrowRight, CircleHelp, LockKeyhole, LoaderCircle, ShieldCheck, ArrowUpRight, BadgeCheck, XCircle } from 'lucide-react';
 import { useI18n } from '../i18n';
-import { verifyProofOnchain, type OnchainProofStatus } from '../onchain-verification';
-import { Tilt } from './ui';
 import Navbar from './Navbar';
 import Footer from './Footer';
-import {
-  decryptFileClient,
-  deriveKeyFromWallet,
-  deriveKeyFromPasskey,
-  computeCanonicalEvidenceHash,
-  computeFileHmacSha256,
-  sha256Hex,
-  recoverDekWithWallet,
-  decryptFileName,
-} from '../crypto';
-import {
-  parseVerifierShareFragment,
-  importSharedDek,
-  unwrapDekForVerifier,
-  importVerifierPrivateKey,
-  generateVerifierKeyPair,
-  exportVerifierPublicKey,
-  exportVerifierPrivateKey,
-  type VerifierSharePayload,
-  type VerifierShareEntryPlain,
-  type VerifierShareEntryWrapped,
-} from '../verifier-share';
+import { verifyProofOnchain, type OnchainProofStatus } from '../onchain-verification';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8787';
 
@@ -159,665 +135,145 @@ export function VerifyPublic() {
 type PublicResult = {
   status: string;
   message: string;
-  legacy?: boolean;
-  proof?: any;
-  network?: string;
-  explorerUrl?: string;
-  transactionHash?: string;
-  anchoredAt?: number;
-  blockNumber?: number | string;
-  commitment?: string;
-  proofId?: string;
-  chainId?: number;
-  contractAddress?: string;
-  onchain?: OnchainProofStatus;
-  attester?: string;
-  relayer?: string;
-  revokedAt?: number;
-  revoker?: string;
-  revokeReason?: string;
+  proofId: string;
+  chainId: number;
+  contractAddress: string;
+  legacy: boolean;
+  commitment: string;
+  attester: string;
+  transactionHash: string | null;
+  anchoredAt: number;
+  revoked: boolean;
+  network: string;
+  explorerUrl: string | null;
+  onchain: OnchainProofStatus;
 };
 
 export function PublicProof({ token }: { token: string }) {
   const { t } = useI18n();
   const [result, setResult] = useState<PublicResult | null>(null);
+  const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
-  const [decryptMethod, setDecryptMethod] = useState<'share' | 'wallet' | 'passkey' | 'plaintext'>('wallet');
-  const [decrypting, setDecrypting] = useState(false);
-  const [share, setShare] = useState<VerifierSharePayload | null>(null);
-  const [shareNotice, setShareNotice] = useState('');
-  const [verifierPublicKeyHex, setVerifierPublicKeyHex] = useState('');
-  const [verifierPrivateKeyHex, setVerifierPrivateKeyHex] = useState('');
-  const [verificationReport, setVerificationReport] = useState<{
-    success: boolean;
-    fileName?: string;
-    decryptedSha256?: string;
-    decryptedHmac?: string;
-    matchedCid?: string;
-    perFileSalt?: string;
-    hashMatchedEvidence?: boolean;
-    recomputedEvidenceHash?: string;
-    onchainCommitmentMatch?: boolean;
-    error?: string;
-  } | null>(null);
 
-  async function handleDecryptAndVerify(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file || !result?.proof) return;
-    setDecrypting(true);
-    setVerificationReport(null);
-
-    try {
-      const fileBytes = new Uint8Array(await file.arrayBuffer());
-      let decryptedBytes: ArrayBuffer | null = null;
-      let decryptedSha256 = '';
-      let activeDek: CryptoKey | null = null;
-
-      if (decryptMethod === 'plaintext') {
-        decryptedBytes = fileBytes.buffer;
-        decryptedSha256 = await sha256Hex(decryptedBytes);
-      } else if (decryptMethod === 'share') {
-        // Berbagi akses verifikator: DEK datang dari fragmen URL (tidak pernah dari server)
-        // dan TIDAK PERNAH memakai frasa sandi pemulihan penerbit.
-        if (!share) {
-          throw new Error(
-            'Tautan berbagi akses tidak ditemukan di URL ini. Minta penerbit membuat tautan berbagi verifikator untuk bukti ini.'
-          );
+  useEffect(() => {
+    let active = true;
+    setResult(null);
+    setError('');
+    (async () => {
+      try {
+        const response = await fetch(`${API}/api/public/proofs/${encodeURIComponent(token)}`);
+        const metadata = await response.json();
+        if (!response.ok) throw new Error(metadata.message || 'Metadata bukti tidak tersedia.');
+        if (!metadata.proofId || !metadata.commitment || !metadata.contractAddress || !metadata.chainId) {
+          throw new Error('Metadata minimum untuk pemeriksaan on-chain tidak lengkap.');
         }
-        if (share.proofId && share.proofId !== result.proof.proofId) {
-          throw new Error('Tautan akses ini dibuat untuk bukti lain dan tidak dapat digunakan pada halaman ini.');
-        }
-        let unwrapped = false;
-        if (share.mode === 'ecies') {
-          let privHex = verifierPrivateKeyHex;
-          if (!privHex) {
-            privHex =
-              (window.prompt(
-                'Tautan ini dibungkus ke kunci publik verifikator. Tempel kunci privat verifikator (hex PKCS#8):'
-              ) || '').trim();
-          }
-          if (!privHex) throw new Error('Kunci privat verifikator diperlukan untuk membuka tautan ECIES.');
-          const verifierPrivate = await importVerifierPrivateKey(privHex);
-          for (const entry of share.entries as VerifierShareEntryWrapped[]) {
-            try {
-              const dek = await unwrapDekForVerifier(entry.wrap, verifierPrivate);
-              const dec = await decryptFileClient(fileBytes, dek);
-              decryptedBytes = dec.decryptedBytes;
-              decryptedSha256 = dec.decryptedSha256;
-              activeDek = dek;
-              unwrapped = true;
-              break;
-            } catch (_) {}
-          }
-          if (!unwrapped) throw new Error('Kunci privat verifikator tidak cocok dengan pembungkus DEK.');
-        } else {
-          for (const entry of share.entries as VerifierShareEntryPlain[]) {
-            try {
-              const dek = await importSharedDek(entry.dek);
-              const dec = await decryptFileClient(fileBytes, dek);
-              decryptedBytes = dec.decryptedBytes;
-              decryptedSha256 = dec.decryptedSha256;
-              activeDek = dek;
-              unwrapped = true;
-              break;
-            } catch (_) {}
-          }
-          if (!unwrapped) throw new Error('DEK pada tautan berbagi tidak dapat membuka berkas ini.');
-        }
-      } else {
-        let key: CryptoKey;
-        if (decryptMethod === 'wallet') {
-          if (!window.ethereum) throw new Error('MetaMask / Web3 provider diperlukan.');
-          const accounts = (await window.ethereum.request({ method: 'eth_requestAccounts' })) as string[];
-          key = await deriveKeyFromWallet(accounts[0]);
-        } else {
-          key = await deriveKeyFromPasskey();
-        }
-
-        const evidenceList: any[] = result.proof.evidence || [];
-        let unwrapped = false;
-        for (const ev of evidenceList) {
-          if (ev.wrappedKeys?.wrappedBy?.wallet && decryptMethod === 'wallet') {
-            try {
-              const dek = await recoverDekWithWallet(ev.wrappedKeys, key);
-              const dec = await decryptFileClient(fileBytes, dek);
-              decryptedBytes = dec.decryptedBytes;
-              decryptedSha256 = dec.decryptedSha256;
-              activeDek = dek;
-              unwrapped = true;
-              break;
-            } catch (_) {}
-          }
-        }
-
-        if (!unwrapped) {
-          const decrypted = await decryptFileClient(fileBytes, key);
-          decryptedBytes = decrypted.decryptedBytes;
-          decryptedSha256 = decrypted.decryptedSha256;
-          activeDek = key;
-        }
+        const chainId = Number(import.meta.env.VITE_PANDU_CHAIN_ID || 421614);
+        const legacyRegistryAddress = import.meta.env.VITE_PANDU_LEGACY_REGISTRY_ADDRESS || '';
+        const legacy = Boolean(legacyRegistryAddress)
+          && String(metadata.contractAddress).toLowerCase() === legacyRegistryAddress.toLowerCase();
+        const onchain = await verifyProofOnchain({
+          proofId: metadata.proofId,
+          commitment: metadata.commitment,
+          contractAddress: metadata.contractAddress,
+          chainId: Number(metadata.chainId),
+          legacy,
+        }, {
+          chainId,
+          rpcUrl: import.meta.env.VITE_PANDU_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc',
+          registryAddress: import.meta.env.VITE_PANDU_REGISTRY_ADDRESS || '0x2e6aE365874D3b06dA896980D1CFc817Be873EE9',
+          legacyRegistryAddress,
+        });
+        const explorer = Number(metadata.chainId) === 42161 ? 'https://arbiscan.io' : 'https://sepolia.arbiscan.io';
+        const status = onchain.status;
+        const message = status === 'VERIFIED'
+          ? 'Commitment cocok dengan evidenceHash di chain dan proof masih valid.'
+          : status === 'REVOKED' || status === 'LEGACY_REVOKED'
+            ? 'Proof telah dicabut menurut status on-chain.'
+            : status.startsWith('LEGACY_')
+              ? 'Legacy v1: catatan lama tanpa tanda tangan penerbit.'
+              : 'Commitment tidak cocok atau proof tidak valid di chain.';
+        if (active) setResult({
+          ...metadata,
+          status,
+          legacy,
+          message,
+          attester: onchain.attester,
+          anchoredAt: onchain.timestamp,
+          revoked: onchain.revoked,
+          network: Number(metadata.chainId) === 42161 ? 'Arbitrum One' : 'Arbitrum Sepolia',
+          explorerUrl: metadata.transactionHash ? `${explorer}/tx/${metadata.transactionHash}` : null,
+          onchain,
+        });
+      } catch (cause) {
+        if (active) setError(cause instanceof Error ? cause.message : 'Pemeriksaan on-chain gagal.');
       }
-
-      if (!decryptedBytes || !decryptedSha256) {
-        throw new Error('Gagal memproses dekripsi berkas.');
-      }
-
-      // 1. Cek kecocokan HMAC atau hash berkas dengan lampiran bukti di canonical snapshot
-      const evidenceList: any[] = result.proof.evidence || [];
-      const hashList: string[] = result.proof.evidenceHashes || [];
-
-      let matchedEvidenceItem: any = null;
-      let matchedHmac: string | undefined;
-
-      for (const ev of evidenceList) {
-        if (ev.hmac && ev.salt) {
-          const candidateHmac = await computeFileHmacSha256(decryptedBytes, ev.salt);
-          if (candidateHmac.toLowerCase() === ev.hmac.toLowerCase()) {
-            matchedEvidenceItem = ev;
-            matchedHmac = candidateHmac;
-            break;
-          }
-        } else if (ev.sha256) {
-          if (ev.sha256.toLowerCase() === decryptedSha256.toLowerCase()) {
-            matchedEvidenceItem = ev;
-            break;
-          }
-        }
-      }
-
-      const hashMatchedEvidence = Boolean(
-        matchedEvidenceItem ||
-        hashList.some((h: string) => h.toLowerCase() === decryptedSha256.toLowerCase())
-      );
-
-      // Dekripsi nama berkas jika terenkripsi
-      let displayFileName = file.name;
-      if (activeDek && matchedEvidenceItem?.encryptedName) {
-        try {
-          displayFileName = await decryptFileName(matchedEvidenceItem.encryptedName, activeDek);
-        } catch (_) {}
-      }
-
-      // 2. Rakit ulang Canonical Proof Snapshot
-      const reconstructedSnapshot = {
-        approvedAt: result.proof.approvedAt,
-        batchRef: result.proof.batchRef,
-        canonicalizationVersion: result.proof.canonicalizationVersion || 1,
-        evidence: result.proof.evidence || [],
-        inspection: result.proof.inspection,
-        material: result.proof.material,
-        proofId: result.proof.proofId,
-        salt: result.proof.salt,
-        supplier: result.proof.supplier,
-      };
-
-      // 3. Hitung ulang evidenceHash
-      const recomputedEvidenceHash = await computeCanonicalEvidenceHash(reconstructedSnapshot);
-
-      // 4. Bandingkan dengan on-chain commitment yang disimpan di kontrak
-      const onchainCommitmentMatch =
-        recomputedEvidenceHash.toLowerCase() === (result.commitment || '').toLowerCase();
-
-      setVerificationReport({
-        success: onchainCommitmentMatch && hashMatchedEvidence,
-        fileName: displayFileName,
-        decryptedSha256,
-        decryptedHmac: matchedHmac,
-        matchedCid: matchedEvidenceItem?.cid,
-        perFileSalt: matchedEvidenceItem?.salt,
-        hashMatchedEvidence,
-        recomputedEvidenceHash,
-        onchainCommitmentMatch,
-      });
-    } catch (err: any) {
-      setVerificationReport({
-        success: false,
-        error: err.message || 'Gagal mendekripsi atau memvalidasi berkas.',
-      });
-    } finally {
-      setDecrypting(false);
-    }
-  }
-
-  useEffect(() => { 
-    let live = true; 
-    setResult(null); 
-    fetch(`${API}/api/public/proofs/${encodeURIComponent(token)}`)
-      .then(async response => { 
-        const body = await response.json(); 
-        if (!response.ok && !body.status) throw new Error(body.message || 'Bukti belum dapat dimuat.'); 
-        if (body.proofId && body.commitment && body.contractAddress && body.chainId) {
-          const chainId = Number(import.meta.env.VITE_PANDU_CHAIN_ID || 421614);
-          const registryAddress = import.meta.env.VITE_PANDU_REGISTRY_ADDRESS || '0x2e6aE365874D3b06dA896980D1CFc817Be873EE9';
-          const legacyRegistryAddress = import.meta.env.VITE_PANDU_LEGACY_REGISTRY_ADDRESS || '';
-          const onchain = await verifyProofOnchain({
-            proofId: body.proofId,
-            chainId: Number(body.chainId),
-            contractAddress: body.contractAddress,
-            commitment: body.commitment,
-            legacy: Boolean(body.legacy),
-          }, {
-            rpcUrl: import.meta.env.VITE_PANDU_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc',
-            chainId,
-            registryAddress,
-            legacyRegistryAddress,
-          });
-          body.onchain = onchain;
-          body.status = onchain.status;
-          body.legacy = body.legacy || onchain.status.startsWith('LEGACY_');
-          body.attester = onchain.attester;
-          body.relayer = onchain.relayer || body.relayer;
-          body.anchoredAt = onchain.timestamp;
-          body.message = onchain.status === 'VERIFIED'
-            ? 'Commitment cocok dengan record v2 di chain dan proof masih valid.'
-            : onchain.status === 'REVOKED'
-              ? 'Proof v2 telah dicabut di chain.'
-              : onchain.status.startsWith('LEGACY_')
-                ? 'Legacy v1: tanda tangan penerbit tidak diperiksa oleh kontrak.'
-                : 'Record chain tidak cocok dengan commitment atau tidak valid.';
-        }
-        return body; 
-      })
-      .then(data => { if (live) setResult(data); })
-      .catch(error => { if (live) setResult({ status: 'UNAVAILABLE', message: error.message }); }); 
-    return () => { live = false; }; 
+    })();
+    return () => { active = false; };
   }, [token, retry]);
 
-  // Baca fragmen URL: tautan berbagi akses verifikator (DEK untuk SATU bukti)
-  useEffect(() => {
-    const parsed = parseVerifierShareFragment(window.location.hash);
-    setShare(parsed);
-    setShareNotice('');
-    if (parsed) setDecryptMethod('share');
-  }, [token]);
-
-  /** Verifikator membuat pasangan kunci sendiri; kunci publik dikirim ke penerbit. */
-  async function createVerifierKeypair() {
-    try {
-      const pair = await generateVerifierKeyPair();
-      const privateKeyHex = await exportVerifierPrivateKey(pair.privateKey);
-      const publicKeyHex = await exportVerifierPublicKey(pair.publicKey);
-      setVerifierPrivateKeyHex(privateKeyHex);
-      setVerifierPublicKeyHex(publicKeyHex);
-      setShareNotice('Kunci privat hanya tersedia selama sesi halaman ini. Simpan sendiri dengan aman bila dibutuhkan kembali.');
-      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(publicKeyHex);
-      setShareNotice('Kunci verifikator dibuat. Kunci publik disalin ke clipboard — kirimkan ke penerbit.');
-    } catch (err: any) {
-      setShareNotice(err.message || 'Gagal membuat kunci verifikator.');
-    }
-  }
-
-  // Determine status metadata
-  const legend = t.verify.legend;
-  let statusInfo = legend.find((l: any) => l.k === 'bad');
-  let toneClass = 'bg-red-50 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-900/30';
-  let icon = <CircleHelp size={28} />;
-
-  if (result?.status === 'VERIFIED') {
-    statusInfo = legend.find((l: any) => l.k === 'good');
-    toneClass = 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-900/30';
-    icon = <BadgeCheck size={28} />;
-  } else if (result?.status === 'LEGACY_UNSIGNED' || result?.status === 'LEGACY_REVOKED') {
-    statusInfo = legend.find((l: any) => l.k === 'legacy');
-    toneClass = 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-900/30';
-    icon = <ShieldCheck size={28} />;
-  } else if (result?.status === 'PENDING') {
-    statusInfo = legend.find((l: any) => l.k === 'pending');
-    toneClass = 'bg-brand-50 text-brand-700 border-brand-200 dark:bg-brand-900/20 dark:text-brand-400 dark:border-brand-900/30';
-    icon = <LoaderCircle className="animate-spin" size={28} />;
-  }
-
-  const title = result?.legacy ? t.proof.status[result.status] : statusInfo?.title || 'Belum dapat diperiksa';
+  const legacy = result?.legacy || false;
+  const good = result?.status === 'VERIFIED';
+  const toneClass = good
+    ? 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-900/30'
+    : legacy
+      ? 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-900/30'
+      : 'bg-red-50 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-900/30';
+  const title = good ? 'Valid di chain' : legacy ? 'Legacy v1 — tanpa tanda tangan penerbit' : result?.status === 'REVOKED' ? 'Proof dicabut' : 'Belum terverifikasi';
 
   return (
     <div className="lp min-h-screen flex flex-col bg-mist text-ink transition-colors duration-300">
       <Navbar />
-
       <main className="flex-1 p-6 pt-32 pb-24 w-full max-w-4xl mx-auto flex flex-col items-center">
-        
         <div className="w-full text-center mb-10">
           <span className="inline-flex items-center gap-2 text-xs font-bold text-ink-soft bg-canvas px-4 py-2 rounded-full border border-black/5 dark:border-white/5 uppercase tracking-wider mb-4 shadow-sm">
             <LockKeyhole size={14} className="text-brand" /> {t.verify.noLogin}
           </span>
           <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">Hasil pemeriksaan bukti</h1>
         </div>
-
-        {!result ? (
-          <div className="flex flex-col items-center justify-center p-16 text-ink-soft gap-4 bg-canvas rounded-3xl border border-black/5 dark:border-white/5 w-full shadow-sm">
-            <LoaderCircle className="animate-spin text-brand" size={36} />
-            <p className="font-medium text-lg">Memeriksa ringkasan dengan catatan jaringan…</p>
-          </div>
-        ) : (
-          <motion.div 
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="w-full grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-8 items-start"
-          >
-            {/* Left: Certificate Detail / Status */}
-            <div className="space-y-6 w-full">
-              
-              <div className={`flex flex-col sm:flex-row sm:items-center gap-5 p-6 rounded-3xl border ${toneClass} shadow-sm`}>
-                <div className="shrink-0">{icon}</div>
-                <div>
-                  <h2 className="text-xl font-bold">{title}</h2>
-                  <p className="opacity-90 mt-1 font-medium">{result.message}</p>
-                </div>
-              </div>
-
-              {result.onchain && (
-                <section aria-label="Status bukti on-chain" className="bg-canvas border border-black/5 dark:border-white/5 rounded-3xl p-6 shadow-sm space-y-2 text-sm">
-                  <h3 className="font-bold text-base">Lapisan verifikasi on-chain</h3>
-                  <p>Tanda tangan penerbit: <strong>{result.onchain.issuerSignature === 'not-checked-legacy' ? 'Legacy v1, tanpa tanda tangan penerbit' : 'Diterima saat anchor v2'}</strong></p>
-                  <p>Status cabut: <strong>{result.onchain.revoked ? 'Dicabut' : 'Belum dicabut'}</strong></p>
-                  <p>Commitment lokal cocok dengan evidenceHash: <strong>{result.onchain.commitmentMatches ? 'Ya' : 'Tidak'}</strong></p>
-                  <p>isValid(): <strong>{result.onchain.isValid === null ? 'Tidak tersedia di v1' : String(result.onchain.isValid)}</strong></p>
-                  <p>verify(): <strong>{result.onchain.verify === null ? 'Tidak tersedia di v1' : String(result.onchain.verify)}</strong></p>
-                  {result.onchain.attester && <p>Attester: <code className="break-all">{result.onchain.attester}</code></p>}
-                </section>
-              )}
-
-              {result.proof && (
-                <div className="bg-canvas border border-black/5 dark:border-white/5 rounded-3xl p-6 sm:p-8 shadow-sm">
-                  <h3 className="font-bold text-xl mb-6 flex items-center gap-2">
-                    <FileSearch size={22} className="text-brand" />
-                    Data yang dibagikan
-                  </h3>
-                  
-                  <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-6">
-                    <div>
-                      <dt className="text-sm font-semibold text-ink-soft mb-1 uppercase tracking-wider">Produk / material</dt>
-                      <dd className="font-bold text-ink text-lg">{result.proof.material}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-sm font-semibold text-ink-soft mb-1 uppercase tracking-wider">Nomor batch</dt>
-                      <dd className="font-bold text-ink text-lg">{result.proof.batchRef}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-sm font-semibold text-ink-soft mb-1 uppercase tracking-wider">Pemasok</dt>
-                      <dd className="font-bold text-ink text-lg">{result.proof.supplier}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-sm font-semibold text-ink-soft mb-1 uppercase tracking-wider">Disetujui pada</dt>
-                      <dd className="font-bold text-ink text-lg">
-                        {result.proof.approvedAt ? new Date(result.proof.approvedAt).toLocaleString('id-ID') : '—'}
-                      </dd>
-                    </div>
-                    <div className="sm:col-span-2">
-                      <dt className="text-sm font-semibold text-ink-soft mb-2 uppercase tracking-wider">Hasil inspeksi</dt>
-                      <dd className="font-medium text-ink bg-mist/50 border border-black/5 dark:border-white/5 p-4 rounded-xl leading-relaxed text-lg">
-                        {result.proof.inspection?.result || 
-                         result.proof.inspection?.checks?.map((c: any) => `${c.label || c.key}: ${c.actual} ${c.unit} · ${c.result}`).join(' / ')}
-                      </dd>
-                    </div>
-                    <div className="sm:col-span-2 flex items-center gap-3 pt-6 mt-2 border-t border-black/5 dark:border-white/5">
-                      <div className="w-10 h-10 rounded-full bg-brand/10 flex items-center justify-center text-brand">
-                        <ShieldCheck size={20} />
-                      </div>
-                      <div>
-                        <dt className="text-xs font-bold text-ink-soft uppercase tracking-wider">Jaringan Pencatat</dt>
-                        <dd className="font-bold text-ink text-lg">{result.network || 'Arbitrum'}</dd>
-                      </div>
-                    </div>
-                    {[
-                      ['Nomor bukti', result.proof.proofId],
-                      ['Penerbit (Attester)', result.legacy ? null : result.attester],
-                      ['Relayer v1 (bukan penandatangan)', result.legacy ? result.relayer : null],
-                      ['Waktu tercatat', result.anchoredAt ? new Date(result.anchoredAt * 1000).toLocaleString('id-ID') : null],
-                      ['Status', result.legacy ? t.proof.status[result.status] : result.status === 'REVOKED' ? 'Dicabut' : result.status === 'VERIFIED' ? 'Valid' : 'Tidak Valid'],
-                      ['Waktu pencabutan', result.revokedAt ? new Date(result.revokedAt * 1000).toLocaleString('id-ID') : null],
-                      ['Pencabut (Revoker)', result.revoker],
-                      ['Alasan pencabutan', result.revokeReason && result.revokeReason !== '0x0000000000000000000000000000000000000000000000000000000000000000' ? result.revokeReason : null],
-                      ['Blok', result.blockNumber],
-                      ['Hash transaksi', result.transactionHash],
-                      ['Sidik jari data (commitment)', result.commitment],
-                      ['Jumlah berkas bukti', Array.isArray(result.proof.evidence) ? `${result.proof.evidence.length} berkas (hash tercatat)` : Array.isArray(result.proof.evidenceHashes) ? `${result.proof.evidenceHashes.length} berkas (hash tercatat)` : null],
-                    ].filter(([, v]) => v !== null && v !== undefined && v !== '').map(([k, v]) => (
-                      <div key={String(k)} className="sm:col-span-2">
-                        <dt className="text-sm font-semibold text-ink-soft mb-1 uppercase tracking-wider">{k}</dt>
-                        <dd className="font-mono text-sm text-ink break-all bg-mist/50 border border-black/5 dark:border-white/5 px-3 py-2 rounded-lg">{String(v)}</dd>
-                      </div>
-                    ))}
-                  </dl>
-
-                  {/* Dekripsi Klien & Rekonstruksi Canonical Proof */}
-                  <div className="mt-8 pt-6 border-t border-black/5 dark:border-white/5 space-y-4">
-                    <div>
-                      <h4 className="font-bold text-base flex items-center gap-2 text-ink">
-                        <ShieldCheck size={18} className="text-brand" />
-                        Verifikasi Mandiri: Dekripsi & Rekonstruksi Canonical Proof
-                      </h4>
-                      <p className="text-xs text-ink-soft mt-1 leading-relaxed">
-                        Dekripsi ciphertext secara lokal di browser, rakit ulang objek canonical proof secara deterministik, dan bandingkan <code>evidenceHash</code> langsung dengan komitmen <code>verify()</code> on-chain.
-                      </p>
-                    </div>
-
-                    <div className="flex flex-wrap gap-2 text-xs">
-                      <button
-                        type="button"
-                        onClick={() => setDecryptMethod('share')}
-                        className={`px-3 py-1.5 rounded-lg font-semibold border transition-all ${
-                          decryptMethod === 'share'
-                            ? 'bg-brand text-white border-brand'
-                            : 'bg-canvas text-ink border-black/10 dark:border-white/10 hover:bg-mist'
-                        }`}
-                      >
-                        Tautan Berbagi Akses
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDecryptMethod('wallet')}
-                        className={`px-3 py-1.5 rounded-lg font-semibold border transition-all ${
-                          decryptMethod === 'wallet'
-                            ? 'bg-brand text-white border-brand'
-                            : 'bg-canvas text-ink border-black/10 dark:border-white/10 hover:bg-mist'
-                        }`}
-                      >
-                        Kunci Wallet (MetaMask)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDecryptMethod('passkey')}
-                        className={`px-3 py-1.5 rounded-lg font-semibold border transition-all ${
-                          decryptMethod === 'passkey'
-                            ? 'bg-brand text-white border-brand'
-                            : 'bg-canvas text-ink border-black/10 dark:border-white/10 hover:bg-mist'
-                        }`}
-                      >
-                        Passkey / WebAuthn
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDecryptMethod('plaintext')}
-                        className={`px-3 py-1.5 rounded-lg font-semibold border transition-all ${
-                          decryptMethod === 'plaintext'
-                            ? 'bg-brand text-white border-brand'
-                            : 'bg-canvas text-ink border-black/10 dark:border-white/10 hover:bg-mist'
-                        }`}
-                      >
-                        Berkas Sudah Terdekripsi
-                      </button>
-                    </div>
-
-                    {decryptMethod === 'share' && (
-                      <div className="p-3 rounded-xl bg-mist/60 border border-black/5 dark:border-white/5 text-xs text-ink-soft space-y-2">
-                        {share ? (
-                          <p>
-                            <strong className="text-ink">Tautan berbagi akses terdeteksi.</strong>{' '}
-                            {share.mode === 'ecies'
-                              ? 'DEK dibungkus ke kunci publik verifikator (ECIES P-256 + HKDF-SHA256 + AES-256-GCM).'
-                              : `DEK untuk ${share.entries.length} berkas dibawa pada fragmen URL dan tidak pernah dikirim ke server.`}
-                            {share.proofId ? ` · Bukti ${share.proofId}` : ''}
-                          </p>
-                        ) : (
-                          <p>
-                            Halaman ini tidak memuat akses DEK. Minta penerbit membuat tautan berbagi verifikator
-                            untuk bukti ini, atau buat kunci verifikator di bawah dan kirimkan kunci publiknya ke penerbit.
-                          </p>
-                        )}
-                        <div className="flex flex-wrap items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={createVerifierKeypair}
-                            className="px-3 py-1.5 rounded-lg font-semibold border bg-canvas text-ink border-black/10 dark:border-white/10 hover:bg-mist"
-                          >
-                            {verifierPublicKeyHex ? 'Buat ulang kunci verifikator' : 'Buat kunci verifikator'}
-                          </button>
-                          {verifierPublicKeyHex && (
-                            <code className="break-all text-[10px]">
-                              {verifierPublicKeyHex.slice(0, 24)}…{verifierPublicKeyHex.slice(-16)}
-                            </code>
-                          )}
-                        </div>
-                        {shareNotice && <p className="text-brand font-medium">{shareNotice}</p>}
-                      </div>
-                    )}
-
-                    <div className="space-y-2">
-                      <label className="block text-xs font-semibold text-ink-soft uppercase tracking-wider">
-                        {decryptMethod === 'plaintext'
-                          ? 'Pilih Berkas Asli (Hasil Dekripsi)'
-                          : 'Pilih Berkas Ciphertext (.enc)'}
-                      </label>
-                      <input
-                        type="file"
-                        disabled={decrypting}
-                        onChange={handleDecryptAndVerify}
-                        className="block w-full text-xs text-ink-soft file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-brand/10 file:text-brand hover:file:bg-brand/20 cursor-pointer"
-                      />
-                    </div>
-
-                    {decrypting && (
-                      <div className="flex items-center gap-2 text-xs text-brand py-2">
-                        <LoaderCircle size={16} className="animate-spin" />
-                        <span>Mendekripsi berkas dan merekonstruksi canonical snapshot...</span>
-                      </div>
-                    )}
-
-                    {verificationReport && (
-                      <div
-                        className={`p-4 rounded-2xl text-xs space-y-2 border ${
-                          verificationReport.success
-                            ? 'bg-green-50 text-green-800 border-green-200 dark:bg-green-950/20 dark:text-green-300 dark:border-green-900/30'
-                            : 'bg-red-50 text-red-800 border-red-200 dark:bg-red-950/20 dark:text-red-300 dark:border-red-900/30'
-                        }`}
-                      >
-                        {verificationReport.error ? (
-                          <div className="flex items-center gap-2 font-bold text-sm">
-                            <XCircle size={16} className="text-red-600 shrink-0" />
-                            <span>{verificationReport.error}</span>
-                          </div>
-                        ) : (
-                          <>
-                            <div className="flex items-center gap-2 font-bold text-sm mb-2">
-                              {verificationReport.success ? (
-                                <>
-                                  <CheckCircle2 size={18} className="text-green-600 shrink-0" />
-                                  <span>VERIFIKASI PENUH BERHASIL (100% Cocok On-Chain)</span>
-                                </>
-                              ) : (
-                                <>
-                                  <XCircle size={18} className="text-red-600 shrink-0" />
-                                  <span>VERIFIKASI GAGAL: Terdeteksi Ketidakcocokan</span>
-                                </>
-                              )}
-                            </div>
-                            <div className="grid grid-cols-1 gap-1.5 text-[11px] font-mono break-all">
-                              <div><strong>Berkas:</strong> {verificationReport.fileName}</div>
-                              <div><strong>SHA-256 Plaintext:</strong> {verificationReport.decryptedSha256}</div>
-                              {verificationReport.decryptedHmac && (
-                                <div><strong>HMAC-SHA256 (Per-File Salt):</strong> {verificationReport.decryptedHmac}</div>
-                              )}
-                              {verificationReport.perFileSalt && (
-                                <div><strong>Salt Berkas:</strong> {verificationReport.perFileSalt}</div>
-                              )}
-                              <div>
-                                <strong>Kesesuaian Lampiran (CID/HMAC):</strong>{' '}
-                                {verificationReport.hashMatchedEvidence
-                                  ? `✓ Cocok dengan lampiran snapshot (${verificationReport.matchedCid || 'terdaftar'})`
-                                  : '✗ Tidak ditemukan di bukti ini'}
-                              </div>
-                              <div><strong>Canonical evidenceHash Dihitung:</strong> {verificationReport.recomputedEvidenceHash}</div>
-                              <div><strong>On-chain Commitment di Kontrak:</strong> {result.commitment}</div>
-                              <div>
-                                <strong>Status On-chain:</strong>{' '}
-                                {result.legacy
-                                  ? result.status === 'LEGACY_UNSIGNED' && verificationReport.onchainCommitmentMatch
-                                    ? 'Legacy v1: commitment cocok; tanda tangan penerbit tidak diperiksa.'
-                                    : result.status === 'LEGACY_REVOKED'
-                                      ? 'Legacy v1: telah dicabut; tanda tangan penerbit tidak diperiksa.'
-                                      : 'Legacy v1: record tidak cocok; tanda tangan penerbit tidak diperiksa.'
-                                  : verificationReport.onchainCommitmentMatch && result.status === 'VERIFIED'
-                                  ? '✓ VALID & IDENTIK (verify() = true)'
-                                  : result.status === 'REVOKED'
-                                  ? '✗ DICABUT (Revoked)'
-                                  : '✗ MISMATCH'}
-                              </div>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {result.status === 'UNAVAILABLE' && (
-                <button 
-                  className="w-full py-4 bg-canvas border border-black/10 dark:border-white/10 rounded-xl font-bold hover:bg-mist transition-colors shadow-sm"
-                  onClick={() => setRetry(v => v + 1)}
-                >
-                  Coba periksa lagi
-                </button>
-              )}
-              
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 1 }} className="w-full max-w-3xl space-y-6">
+          {!result && !error && (
+            <div className="flex items-center justify-center p-16 text-ink-soft gap-4 bg-canvas rounded-3xl border border-black/5 dark:border-white/5 shadow-sm">
+              <LoaderCircle className="animate-spin text-brand" size={28} /><span>Memeriksa langsung melalui RPC publik…</span>
             </div>
-
-            {/* Right: QR Code & Actions */}
-            <div className="space-y-6 w-full">
-              
-              {result.proof && (
-                <Tilt>
-                  <div className="bg-canvas border border-black/5 dark:border-white/5 rounded-3xl p-8 shadow-xl flex flex-col items-center text-center">
-                    <div className="bg-white p-4 rounded-2xl shadow-sm mb-6 border border-black/5 ring-1 ring-black/5">
-                      <QRCodeSVG value={window.location.href} size={150} level="M" />
-                    </div>
-                    <h3 className="font-bold text-ink text-lg mb-2">Tautan bukti dapat dibagikan</h3>
-                    <p className="text-sm font-medium text-ink-soft leading-relaxed">
-                      QR ini membuka halaman pemeriksaan yang sama. Dokumen asli tetap privat dan tidak ikut dibagikan.
-                    </p>
-                  </div>
-                </Tilt>
-              )}
-
-              {result.explorerUrl && (
-                <a 
-                  href={result.explorerUrl} 
-                  target="_blank" 
-                  rel="noreferrer"
-                  className="w-full flex items-center justify-center gap-2 py-4 bg-canvas hover:bg-mist text-ink font-bold rounded-2xl transition-colors border border-black/5 dark:border-white/5 shadow-sm"
-                >
-                  Lihat di Arbiscan <ArrowUpRight size={18} />
-                </a>
-              )}
-
-              <details className="bg-canvas border border-black/5 dark:border-white/5 rounded-2xl group [&_summary::-webkit-details-marker]:hidden shadow-sm">
-                <summary className="p-5 flex items-center justify-between font-bold cursor-pointer text-ink select-none">
-                  Bagaimana cara membaca ini?
-                  <span className="text-ink-soft transition-transform group-open:rotate-180">
-                    <ChevronLeft className="-rotate-90" size={18} />
-                  </span>
-                </summary>
-                <div className="p-5 pt-0 text-sm font-medium text-ink-soft leading-relaxed border-t border-black/5 dark:border-white/5 mt-2 pt-4">
-                  PANDU menghitung ulang sidik jari digital (hash) dari data ringkasan ini dan membandingkannya dengan catatan yang ada di jaringan blockchain Arbitrum. Hasil ini membuktikan bahwa data belum diubah sejak disetujui, tetapi tidak dengan sendirinya menjamin kondisi fisik produk di dunia nyata.
-                </div>
-              </details>
-
+          )}
+          {error && (
+            <div role="alert" className="p-6 bg-red-50 text-red-700 border border-red-200 rounded-3xl">
+              <div className="flex items-center gap-2 font-bold"><XCircle size={20} />Pemeriksaan chain tidak tersedia</div>
+              <p className="mt-2">{error}</p>
+              <button className="mt-4 px-4 py-2 rounded-xl bg-white border border-red-200 font-semibold" onClick={() => setRetry((value) => value + 1)}>Coba lagi</button>
             </div>
-
-          </motion.div>
-        )}
+          )}
+          {result && (
+            <>
+              <section className={`p-6 rounded-3xl border shadow-sm flex items-start gap-4 ${toneClass}`}>
+                {good ? <BadgeCheck size={28} /> : legacy ? <ShieldCheck size={28} /> : result.status === 'REVOKED' ? <XCircle size={28} /> : <CircleHelp size={28} />}
+                <div><h2 className="text-xl font-bold">{title}</h2><p className="mt-1">{result.message}</p></div>
+              </section>
+              <section aria-label="Status bukti on-chain" className="bg-canvas border border-black/5 dark:border-white/5 rounded-3xl p-6 shadow-sm space-y-3">
+                <h3 className="font-bold text-lg">Lapisan pemeriksaan</h3>
+                <p>Tanda tangan penerbit: <strong>{legacy ? 'Tidak diperiksa pada kontrak v1' : 'Diterima kontrak v2 saat anchor'}</strong></p>
+                <p>Status cabut: <strong>{result.revoked ? 'Dicabut' : 'Belum dicabut'}</strong></p>
+                <p>Kecocokan evidenceHash: <strong>{result.onchain.commitmentMatches ? 'Cocok dengan commitment metadata' : 'Tidak cocok'}</strong></p>
+                <p>isValid(): <strong>{result.onchain.isValid === null ? 'Tidak tersedia di v1' : String(result.onchain.isValid)}</strong></p>
+                <p>verify(): <strong>{result.onchain.verify === null ? 'Tidak tersedia di v1' : String(result.onchain.verify)}</strong></p>
+              </section>
+              <section className="bg-canvas border border-black/5 dark:border-white/5 rounded-3xl p-6 shadow-sm space-y-4">
+                <h3 className="font-bold text-lg flex items-center gap-2"><FileSearch size={20} className="text-brand" />Metadata bukti</h3>
+                <dl className="grid gap-4 text-sm">
+                  <div><dt className="font-semibold text-ink-soft">Proof ID</dt><dd className="font-mono break-all">{result.proofId}</dd></div>
+                  <div><dt className="font-semibold text-ink-soft">Commitment</dt><dd className="font-mono break-all">{result.commitment}</dd></div>
+                  <div><dt className="font-semibold text-ink-soft">Attester on-chain</dt><dd className="font-mono break-all">{result.attester}</dd></div>
+                  <div><dt className="font-semibold text-ink-soft">Waktu anchor on-chain</dt><dd>{result.anchoredAt ? new Date(result.anchoredAt * 1000).toLocaleString('id-ID') : '—'}</dd></div>
+                  <div><dt className="font-semibold text-ink-soft">Status</dt><dd>{result.status}</dd></div>
+                </dl>
+                <p className="text-xs text-ink-soft">Endpoint publik hanya memberi metadata minimum. Data bisnis dan snapshot tidak diambil atau ditampilkan.</p>
+              </section>
+              {result.explorerUrl && <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="w-full flex items-center justify-center gap-2 py-4 bg-canvas hover:bg-mist text-ink font-bold rounded-2xl transition-colors border border-black/5 dark:border-white/5 shadow-sm">Lihat transaksi pada explorer <ArrowUpRight size={18} /></a>}
+              <button className="w-full py-4 bg-canvas border border-black/10 dark:border-white/10 rounded-xl font-bold hover:bg-mist transition-colors shadow-sm" onClick={() => setRetry((value) => value + 1)}>Periksa ulang</button>
+            </>
+          )}
+        </motion.div>
       </main>
-
       <Footer />
     </div>
   );

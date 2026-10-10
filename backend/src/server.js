@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { assertProductionEnv, parseTrustProxy } from './env-guard.js';
 import { createCiphertextRouter, createPinataCiphertextStorage } from './ciphertext-router.js';
 import { registerDemoRoutes } from './demo-route-guard.js';
+import { publicProofMetadata } from './public-proof-metadata.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -80,10 +81,6 @@ const registryInterface = new Interface(abi);
 const legacyRegistryAddress = process.env.PANDU_LEGACY_REGISTRY_ADDRESS
   ? getAddress(process.env.PANDU_LEGACY_REGISTRY_ADDRESS)
   : null;
-const legacyRegistryAbi = [
-  'function getProof(bytes32 proofId) view returns ((bytes32 proofId,bytes32 batchRef,bytes32 evidenceHash,address attester,uint64 timestamp,bool revoked,address revoker,uint64 revokedAt))',
-];
-
 // Zod schemas untuk validasi ketat input
 const AnchorBodySchema = z.object({
   signature: z.string().min(10, 'Signature tidak valid'),
@@ -746,42 +743,14 @@ app.get('/api/public/proofs/:token', async (req, res) => {
   const byPublicId = /^PANDU-[A-Fa-f0-9]{16}$/.test(token);
   if (!byPublicId && !/^[A-Za-z0-9_-]{32,80}$/.test(token)) return res.status(404).json({ status: 'NOT_FOUND', message: 'Bukti PANDU tidak ditemukan.' });
   try {
-    // Manual entry uses the printed proof number (public_id); QR links use the secret token.
-    const query = supabaseAdmin.from('quality_proofs').select('*');
+    // Return identifiers and hashes only. The browser checks the registry over public RPC.
+    const query = supabaseAdmin.from('quality_proofs').select('public_id,anchor_status,commitment,chain_id,contract_address,transaction_hash');
     const { data: proof, error } = await (byPublicId ? query.eq('public_id', token.toUpperCase()) : query.eq('public_token_hash', hexBytes32(sha256Hex(token)))).maybeSingle();
     if (error) throw error;
     if (!proof) return res.status(404).json({ status: 'NOT_FOUND', message: 'Bukti PANDU tidak ditemukan.' });
-    if (proof.anchor_status !== 'confirmed' && proof.anchor_status !== 'revoked') return res.json({ status: 'PENDING', message: 'Bukti belum tercatat di jaringan publik.' });
-    const { batch } = await getBatchDetails(proof.organization_id, proof.inspection_id);
-    const proofProvider = getProviderForChain(proof.chain_id);
-    const proofNetwork = await proofProvider.getNetwork();
-    if (proofNetwork.chainId !== BigInt(proof.chain_id)) throw new Error('RPC verifikasi tersambung ke jaringan yang salah.');
-    if (legacyRegistryAddress && getAddress(proof.contract_address) === legacyRegistryAddress) {
-      const legacyRegistry = new Contract(legacyRegistryAddress, legacyRegistryAbi, proofProvider);
-      const chainProof = await legacyRegistry.getProof(proofIdBytes(proof.public_id));
-      const storedCommitment = `0x${bytes32Hex(proof.commitment)}`;
-      const snapshotCommitment = `0x${sha256Hex(canonicalJson(proof.public_snapshot))}`;
-      const same = chainProof.evidenceHash.toLowerCase() === storedCommitment.toLowerCase()
-        && snapshotCommitment.toLowerCase() === storedCommitment.toLowerCase()
-        && chainProof.batchRef.toLowerCase() === dbBatchRef(proof.organization_id, batch.batch_code).toLowerCase();
-      const status = !same ? 'LEGACY_MISMATCH' : chainProof.revoked ? 'LEGACY_REVOKED' : 'LEGACY_UNSIGNED';
-      const message = status === 'LEGACY_UNSIGNED'
-        ? 'Legacy v1: catatan cocok, tetapi transaksi anchor tidak memeriksa tanda tangan penerbit.'
-        : status === 'LEGACY_REVOKED'
-          ? 'Legacy v1: bukti telah dicabut; transaksi anchor tidak memeriksa tanda tangan penerbit.'
-          : 'Legacy v1: ringkasan tidak cocok dengan catatan blockchain dan tanda tangan penerbit tidak diperiksa.';
-      const proofExplorer = explorerFor(proof.chain_id);
-      return res.json({ status, legacy: true, proofId: proofIdBytes(proof.public_id), chainId: Number(proof.chain_id), contractAddress: getAddress(proof.contract_address), proof: proof.public_snapshot, commitment: storedCommitment, transactionHash: proof.transaction_hash, blockNumber: proof.block_number, anchoredAt: Number(chainProof.timestamp), attester: null, relayer: chainProof.attester, revokedAt: Number(chainProof.revokedAt), revoker: chainProof.revoker, revokeReason: null, network: chainLabelFor(proof.chain_id), explorerUrl: proof.transaction_hash ? `${proofExplorer}/tx/${proof.transaction_hash}` : null, message });
-    }
-    const registry = new Contract(getAddress(proof.contract_address), abi, proofProvider);
-    const chainProof = await registry.getProof(proofIdBytes(proof.public_id));
-    const storedCommitment = `0x${bytes32Hex(proof.commitment)}`;
-    const snapshotCommitment = `0x${sha256Hex(canonicalJson(proof.public_snapshot))}`;
-    const same = chainProof.evidenceHash.toLowerCase() === storedCommitment.toLowerCase() && snapshotCommitment.toLowerCase() === storedCommitment.toLowerCase() && chainProof.batchRef.toLowerCase() === dbBatchRef(proof.organization_id, batch.batch_code).toLowerCase();
-    const status = chainProof.revoked ? 'REVOKED' : same ? 'VERIFIED' : 'MISMATCH';
-    const proofExplorer = explorerFor(proof.chain_id);
-    res.json({ status, legacy: false, proofId: proofIdBytes(proof.public_id), chainId: Number(proof.chain_id), contractAddress: getAddress(proof.contract_address), proof: proof.public_snapshot, commitment: storedCommitment, transactionHash: proof.transaction_hash, blockNumber: proof.block_number, anchoredAt: Number(chainProof.timestamp), attester: chainProof.attester, relayer: chainProof.relayer, revokedAt: Number(chainProof.revokedAt), revoker: chainProof.revoker, revokeReason: chainProof.revokeReason, network: chainLabelFor(proof.chain_id), explorerUrl: proof.transaction_hash ? `${proofExplorer}/tx/${proof.transaction_hash}` : null, message: status === 'VERIFIED' ? 'Ringkasan cocok dengan catatan blockchain dan belum dicabut.' : status === 'REVOKED' ? 'Bukti ini sudah dicabut oleh penerbit.' : 'Data ringkasan tidak cocok dengan komitmen di blockchain.' });
-  } catch (error) { res.status(503).json({ status: 'UNAVAILABLE', message: 'Jaringan belum dapat memeriksa bukti. Coba lagi.', detail: error.shortMessage || error.message }); }
+    const legacy = Boolean(legacyRegistryAddress && getAddress(proof.contract_address) === legacyRegistryAddress);
+    res.json(publicProofMetadata(proof, { proofId: proofIdBytes(proof.public_id), legacy }));
+  } catch { res.status(503).json({ status: 'UNAVAILABLE', message: 'Metadata verifikasi belum tersedia. Coba lagi.' }); }
 });
 
 registerDemoRoutes(process.env, () => {

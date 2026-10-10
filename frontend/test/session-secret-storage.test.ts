@@ -12,6 +12,6 @@ describe('raw browser secrets are memory-only', () => {
 
   it('does not read or write verifier private keys in web storage', () => {
     expect(verifier).not.toMatch(/(?:local|session)Storage\.(?:getItem|setItem)\([^)]*(?:verifier|privateKey)/i);
-    expect(verifier).toContain('verifierPrivateKeyHex');
+    expect(verifier).not.toContain('PANDU.verifier.privateKey');
   });
 });

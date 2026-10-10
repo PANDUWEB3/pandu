@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import multer from 'multer';
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -12,6 +11,7 @@ import {
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { assertProductionEnv, parseTrustProxy } from './env-guard.js';
+import { createCiphertextRouter, createPinataCiphertextStorage } from './ciphertext-router.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -20,7 +20,6 @@ assertProductionEnv(process.env);
 app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
 const port = Number(process.env.PORT || 8787);
 const dataFile = path.resolve(__dirname, '..', process.env.DATA_FILE || './data/demo-state.json');
-const uploadDir = path.resolve(__dirname, '..', process.env.UPLOAD_DIR || './data/uploads');
 const chainName = process.env.PANDU_CHAIN || 'arbitrum-sepolia';
 const chainId = chainName === 'arbitrum-one' ? 42161n : 421614n;
 const chainLabel = chainName === 'arbitrum-one' ? 'Arbitrum One' : 'Arbitrum Sepolia';
@@ -120,18 +119,6 @@ const SubmitInspectionBodySchema = z.object({
 
 app.use(cors({ origin: (requestOrigin, callback) => callback(null, !requestOrigin || allowedOrigins.has(requestOrigin)), credentials: false }));
 app.use(express.json({ limit: '1mb' }));
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: async (_req, _file, cb) => { try { await mkdir(uploadDir, { recursive: true }); cb(null, uploadDir); } catch (e) { cb(e); } },
-    filename: (_req, file, cb) => cb(null, `${randomUUID()}${path.extname(file.originalname).slice(0, 12)}`)
-  }),
-  limits: { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    const allowed = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp']);
-    cb(allowed.has(file.mimetype) ? null : new Error('File harus berupa PDF, JPG, PNG, atau WebP.'), allowed.has(file.mimetype));
-  }
-});
-
 const seed = () => ({
   organization: 'PT PANDU Nusantara',
   proofCounter: 0,
@@ -323,6 +310,11 @@ async function requireSupabaseUser(req, res, next) {
   req.authUser = data.user;
   next();
 }
+
+app.use('/api/evidence', createCiphertextRouter({
+  storage: createPinataCiphertextStorage({ jwt: process.env.PINATA_JWT }),
+  requireAuth: requireSupabaseUser,
+}));
 
 app.post('/api/wallet/link/challenge', requireSupabaseUser, async (req, res) => {
   try {
@@ -822,57 +814,6 @@ app.post('/api/inspection/submit', async (req, res) => {
   res.json(summarize());
 });
 
-app.post('/api/evidence', upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'Pilih file bukti terlebih dahulu.' });
-  try {
-    const bytes = await readFile(req.file.path);
-    const sha256Hash = createHash('sha256').update(bytes).digest('hex');
-    
-    // Upload to Pinata
-    const formData = new FormData();
-    formData.append('file', new Blob([bytes]), req.file.originalname);
-    
-    const pinataRes = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${process.env.PINATA_JWT}` },
-      body: formData
-    });
-    
-    if (!pinataRes.ok) throw new Error('Gagal mengunggah ke Pinata');
-    const pinataData = await pinataRes.json();
-    const cid = pinataData.IpfsHash;
-    
-    // Delete local temp file
-    await import('node:fs/promises').then(fs => fs.unlink(req.file.path).catch(() => {}));
-    
-    const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
-    if (token) {
-      // Authenticated request (Supabase mode)
-      return res.status(201).json({ cid, sha256: sha256Hash, name: req.file.originalname });
-    }
-
-    // Local demo mode
-    const item = { id: randomUUID(), name: path.basename(req.file.originalname), mimeType: req.file.mimetype, size: req.file.size, sha256: sha256Hash, addedAt: new Date().toISOString(), cid };
-    state.evidence.push(item); state.proof = null;
-    if (state.inspection.status === 'APPROVED') {
-      state.inspection.status = 'SUBMITTED';
-      state.inspection.submittedAt = new Date().toISOString();
-      state.inspection.approvedAt = null;
-    }
-    audit('EVIDENCE_UPLOADED'); await persist();
-    res.status(201).json(summarize());
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Local demo only: no identity/access layer is configured, so keep this API loopback-bound.
-app.get('/api/evidence/:id', (req, res, next) => {
-  const item = state.evidence.find((entry) => entry.id === req.params.id);
-  if (!item || !item.storagePath) return res.status(404).json({ error: 'Berkas bukti tidak ditemukan.' });
-  res.download(item.storagePath, item.name, (error) => { if (error && !res.headersSent) next(error); });
-});
-
 app.post('/api/qa/approve', async (_req, res) => {
   if (state.inspection.status !== 'SUBMITTED') return res.status(409).json({ error: 'Pemeriksaan yang menunggu review saja yang dapat disetujui.' });
   state.inspection.status = 'APPROVED'; state.inspection.approvedAt = new Date().toISOString();
@@ -1036,6 +977,5 @@ app.get('/api/verify/:proofId', async (req, res) => {
 
 app.use((error, _req, res, _next) => res.status(400).json({ error: error.message || 'Permintaan tidak valid.' }));
 await mkdir(path.dirname(dataFile), { recursive: true });
-await mkdir(uploadDir, { recursive: true });
 await loadState();
 app.listen(port, '127.0.0.1', () => console.log(`PANDU API listening on http://localhost:${port}`));

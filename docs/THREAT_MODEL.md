@@ -55,3 +55,16 @@
 3. Ganti/isolasi skrip mutasi database dengan alur dry-run, backup yang diverifikasi, konfirmasi eksplisit, dan rollback yang diuji; migrasi utama tetap manual dan terpisah.
 4. Lakukan Fase 2 sebelum memindahkan data bisnis lama; jangan menganggap RLS sebagai perlindungan dari database administrator/operator.
 5. Tambahkan sumber attestation alat/lab dan ZK setelah riset resmi dan review; audit independen diperlukan sebelum data nyata.
+
+## Kontrol dan risiko setelah Fase 1
+
+- Public proof API sekarang memproyeksikan metadata minimum dan tidak mengirim `public_snapshot`; halaman publik membaca `getProof`, `isValid`, dan `verify()` dari RPC browser. Ini mengurangi kebocoran API, tetapi data bisnis tetap plaintext di Postgres dan tetap dapat dibaca backend dengan service key sampai Fase 2.
+- Upload `.enc` hanya menerima nama envelope, memperlakukan bytes sebagai opaque, mengabaikan MIME klien, dan membatasi 10 MiB. File migrasi constraint MIME tersedia tetapi belum dijalankan. Sampai migrasi yang disetujui pemilik diterapkan, constraint live mungkin masih menolak `application/octet-stream`.
+- Recovery phrase dan kunci verifier raw tidak disimpan ke Web Storage. Kunci masih berada di memori selama sesi dan XSS same-origin tetap dapat menyerang aplikasi ketika pengguna memakai kunci.
+- Route demo mati default, hanya aktif eksplisit di non-production, dan boot menolak `DEMO_ROUTES=true` saat production. API masih bind loopback; reverse proxy tetap harus mengekspos hanya route yang dibutuhkan.
+- Helmet/CSP, allowlist CORS, request ID, structured route logs, error handler generik, Zod boot config, `/healthz`, dan `/readyz` sudah ditambahkan. Validasi semua route belum menyeluruh; jalur batch resolve tetap publik dan belum memiliki rate limit/anti-enumeration.
+- Anchor/revoke memakai queue dengan batas gas, retry, idempotency journal, lock nonce Redis, timeout/replacement, dan low-balance warning. Migrasi `relayer_jobs` belum dijalankan; job yang status kirimnya ambigu sengaja berhenti dan perlu rekonsiliasi operator. Relayer key masih environment secret, belum KMS.
+- Gitleaks full-history scan pada kedua repo memberi nol temuan setelah fingerprint fixture deterministik di-ignore. Ini tidak menilai apakah secret lokal yang di-ignore masih aktif atau dibagikan di luar Git; pemilik perlu memeriksa file lokal/riwayat distribusi dan merotasi kredensial yang pernah terekspos.
+- CI terpisah untuk root dan repo kontrak tersedia. Slither masih melaporkan tujuh detector result yang diklasifikasikan di `BASELINE_REPORT.md`; pipeline hanya memblokir temuan high impact. CI belum dijalankan pada GitHub dari branch ini.
+
+Kontrol fase ini tidak mengubah trust boundary utama: admin/backend dapat membaca field bisnis lama, issuer tetap dapat menandatangani data salah, relayer dapat menyensor transaksi, dan bukti kriptografis tidak membuktikan kondisi fisik tanpa attestor alat/lab tepercaya.

@@ -2,7 +2,7 @@
 
 **Tanggal pemeriksaan:** 2026-10-10
 
-**Status:** audit statis dan baseline lokal selesai. Fase 0 berhenti di sini; Fase 1 belum dimulai.
+**Status:** audit statis dan baseline lokal Fase 0 selesai. Bagian baseline di atas adalah hasil historis; status penerapan Fase 1 ada pada bagian akhir.
 
 ## Keputusan
 
@@ -99,3 +99,41 @@ Workspace mengenkripsi file di browser dan mengirim Blob ber-MIME `application/o
 Pemeriksaan ini bersifat lokal dan statis. Tidak membaca isi `.env`, tidak menjalankan skrip migrasi, tidak membuka koneksi database utama, tidak membaca data pengguna, tidak broadcast/deploy, dan tidak memvalidasi status live address/role kontrak lewat RPC/explorer. Slither menganalisis kontrak lokal dan dependency saja. Hasil ini bukan audit keamanan independen.
 
 Tes dilakukan pada worktree yang sudah memiliki perubahan lokal di luar Fase 0, termasuk `smart-contract/script/Deploy.s.sol`; tidak ada perubahan tersebut yang saya buat atau stage. Baseline menggambarkan worktree saat pengujian, bukan clean checkout dari commit tertentu.
+
+## Status temuan setelah Fase 1
+
+Status ini memperbarui temuan baseline untuk worktree Fase 1 pada 2026-10-10. `Selesai` berarti kontrol yang diminta di fase ini sudah ada dan diuji; itu bukan berarti semua risiko data PANDU sudah hilang.
+
+| Temuan baseline | Status | Bukti / sisa pekerjaan |
+|---|---|---|
+| Data bisnis plaintext di tabel organisasi dan inspeksi | Belum | Field lama masih plaintext; enkripsi kolom dan key envelopes berada pada Fase 2. Tidak ada DDL atau backfill Supabase dijalankan. |
+| Snapshot bisnis tersimpan di `quality_proofs.public_snapshot` | Sebagian | Route publik tidak lagi memilih atau mengembalikan snapshot (`backend/src/routes/public-proofs.js:54–64`), tetapi snapshot masih disimpan dan dipakai jalur aplikasi internal (`backend/src/server.js:526`). |
+| Backend menjadi sumber keputusan verifikasi | Selesai | Browser memanggil RPC untuk `getProof`, `isValid`, dan `verify()` serta mencocokkan commitment lokal (`frontend/src/onchain-verification.ts:36–75`; UI `frontend/src/landing/Verify.tsx:164–210`). Endpoint server hanya memberi metadata minimum. |
+| API dan constraint database menolak payload `.enc` | Sebagian | API menerima envelope `.enc`, mengabaikan MIME klien, dan membatasi 10 MiB (`backend/src/routes/evidence.js:10–34`). File migrasi idempoten memperbarui constraint (`supabase/migrations/202610100002_ciphertext_mime_constraint.sql`), tetapi belum dijalankan sehingga constraint live belum dipastikan cocok. Roundtrip upload/fetch/decrypt lokal lulus. |
+| Recovery phrase dan kunci verifier di Web Storage | Selesai untuk penyimpanan raw | Alur menyimpan kunci di state/memori dan tidak menulis kunci mentah ke local/session storage; tes statis memeriksa alur terkait (`frontend/test/session-secret-storage.test.ts:14–15`). XSS tetap dapat mengakses material ketika sesi aktif. |
+| Route demo dapat berjalan tanpa opt-in | Selesai | Route hanya diregistrasi dengan `DEMO_ROUTES=true` di non-production; konfigurasi production menolak flag itu (`backend/src/demo-route-guard.js`, `backend/src/config/runtime.js`). Server bind ke `127.0.0.1` (`backend/src/server.js:931`). |
+| Respons publik mengungkap snapshot bisnis | Selesai untuk API publik | Router hanya memilih kolom metadata dan proyeksi tanpa snapshot (`backend/src/routes/public-proofs.js:50–64`; `backend/test/public-proof-routes.test.mjs`). Pencarian kode batch tetap publik dan belum rate-limited. |
+| Skrip mutasi/deploy tidak punya guard operasional | Selesai untuk enam skrip yang diminta | Skrip dikarantina di `backend/scripts/danger/`, dry-run sebagai default, `--execute`, konfirmasi target; skrip destruktif memeriksa backup. Mainnet memerlukan dua guard. Tes guard memastikan default tidak menjalankan efek eksternal (`backend/test/danger-script-guard.test.mjs`). Migrasi SQL sendiri tetap file saja. |
+| Secret masuk ke riwayat Git | Selesai untuk riwayat yang dipindai | Gitleaks 8.30.1 menemukan 0 temuan pada seluruh riwayat root dan repo smart-contract setelah empat fingerprint false-positive fixture dikecualikan (`.gitleaksignore`); pemindaian working tree juga mencakup file lokal yang di-ignore dan tidak membuktikan file tersebut aman untuk dibagikan. Rotasi dilakukan bila pemeriksaan manual pemilik menemukan kredensial aktif terekspos. |
+| Backend monolit, validasi config, logging, health, error, headers, CORS | Sebagian | Zod boot validation, Helmet/CSP, allowlist CORS, request ID/log terstruktur, error handler generik, `/healthz` dan `/readyz` sudah ditambahkan (`backend/src/config/runtime.js`, `backend/src/middleware/`, `backend/src/routes/health.js`). Route organisasi/proof masih besar di `server.js`; validasi belum seragam di semua route. |
+| Rate limiting Redis dan konfigurasi production | Sebagian | Tes Redis atomik/fail-closed ada; production memerlukan `TRUST_PROXY`, Redis, dan `RATE_LIMIT_FAIL_CLOSED=true` (`backend/test/rate-limiter.test.mjs`, `backend/src/config/runtime.js`). Penggunaan belum mencakup semua route publik. |
+| Relayer nonce, retry, idempotency, gas, stuck tx, saldo | Sebagian | Queue sudah tersambung untuk anchor/revoke dan dites (`backend/src/services/relayer-queue.js`, `backend/test/relayer-queue.test.mjs`). Durable job table dan distributed Redis lock memerlukan migration file `202610100003_relayer_jobs.sql` yang belum dijalankan; job ambigu membutuhkan rekonsiliasi operator. |
+| CI root dan repo kontrak terpisah | Selesai sebagai konfigurasi | Workflow terpisah tersedia di `.github/workflows/ci.yml` dan `smart-contract/.github/workflows/ci.yml`; belum dieksekusi oleh GitHub Actions dari branch ini. |
+| E2E Playwright dengan wallet/testnet | Belum | Kerangka Playwright baseline tetap tersedia, tetapi wallet E2E lintas anchor/revoke belum dibuat atau dijalankan. |
+| Kebenaran fisik pengukuran dan sumber data | Belum | Kontrak v2 mengikat signature issuer tetapi tidak mengesahkan sensor/lab; attestor/ZK tetap fase berikutnya. |
+
+### Klasifikasi tujuh hasil Slither source proyek
+
+`slither . --exclude-dependencies` melaporkan tujuh hasil pada `smart-contract/src/PANDUQualityRegistry.sol`; tidak ada kontrak yang diubah pada Fase 1. Semuanya **diterima/dikenali sebagai false positive desain**, dengan alasan berikut:
+
+| No. | Detector / lokasi | Keputusan |
+|---:|---|---|
+| 1 | `incorrect-equality`, `getProof`, sentinel `proofId == bytes32(0)` (`PANDUQualityRegistry.sol:152`) | Diterima: equality dipakai untuk mendeteksi slot struct kosong; bukan nilai yang dapat dipilih penyerang setelah proof disimpan. |
+| 2 | `incorrect-equality`, `verify`, hash evidence sama persis (`:164`) | Diterima: kesamaan bytes32 adalah kriteria verifikasi integritas yang dimaksud; toleransi/ketaksamaan justru salah. |
+| 3 | `timestamp`, deadline `anchorProof` (`:94`) | Diterima: `block.timestamp` dipakai sebagai batas kedaluwarsa signature; ketidakpastian timestamp validator tidak melewati deadline 15 menit aplikasi secara praktis. |
+| 4 | `timestamp`, deadline `revokeProofWithSig` (`:138`) | Diterima: sama, pemeriksaan masa berlaku signature. |
+| 5 | `timestamp`, `getProof` (`:152`) | Diterima sebagai false positive detector: baris yang dilaporkan membandingkan sentinel proof ID, tidak membaca timestamp. |
+| 6 | `timestamp`, `verify` (`:164`) | Diterima sebagai false positive detector: baris yang dilaporkan membandingkan status dan hash, tidak membaca timestamp. |
+| 7 | `pragma`, pragma dependency OpenZeppelin `^0.8.20` terhadap source proyek `0.8.28` | Diterima: `0.8.28` memenuhi rentang dependency; Foundry mematok compiler ke versi itu. Tidak ada mismatch bytecode/deployment yang diperkenalkan Fase 1. |
+
+Slither CI memakai `--fail-high` agar menjalankan pemindaian dan gagal pada temuan high impact; ketujuh temuan yang diterima tetap terlihat pada output, jadi hasil ini bukan klaim audit bersih.

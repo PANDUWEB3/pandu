@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "context": {
+    "organizationId": "org-1",
+    "table": "inspections",
+    "rowId": "row-1",
+    "column": "notes"
+  },
+  "kid": "kid-v1",
+  "canonicalAad": "{\"column\":\"notes\",\"kid\":\"kid-v1\",\"organization_id\":\"org-1\",\"row_id\":\"row-1\",\"table\":\"inspections\"}"
+}

@@ -15,6 +15,7 @@ const RuntimeEnvSchema = z.object({
   SUPABASE_URL: z.string().url().optional(),
   SUPABASE_SECRET_KEY: z.string().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
+  GOOGLE_SUB_PEPPER: z.string().optional(),
   PINATA_JWT: z.string().optional(),
   RELAYER_PRIVATE_KEY: z.string().optional(),
   PUBLIC_TOKEN_SECRET: z.string().min(32).optional(),
@@ -35,6 +36,7 @@ const RuntimeEnvSchema = z.object({
   if (!env.RELAYER_PRIVATE_KEY || !/^0x[0-9a-fA-F]{64}$/.test(env.RELAYER_PRIVATE_KEY)) context.addIssue({ code: 'custom', path: ['RELAYER_PRIVATE_KEY'] });
   if (!env.PANDU_REGISTRY_ADDRESS) context.addIssue({ code: 'custom', path: ['PANDU_REGISTRY_ADDRESS'] });
   if (!env.PUBLIC_TOKEN_SECRET || env.PUBLIC_TOKEN_SECRET.length < 32) context.addIssue({ code: 'custom', path: ['PUBLIC_TOKEN_SECRET'] });
+  if (!env.GOOGLE_SUB_PEPPER || Buffer.byteLength(env.GOOGLE_SUB_PEPPER, 'utf8') < 32) context.addIssue({ code: 'custom', path: ['GOOGLE_SUB_PEPPER'] });
 });
 
 /** Parse once at boot; report field names and codes only, never values. */

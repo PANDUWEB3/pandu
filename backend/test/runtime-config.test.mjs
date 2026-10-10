@@ -17,6 +17,7 @@ test('production requires explicit proxy, Redis fail-closed, CORS allowlist, and
     SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'test-only-secret-value',
     PINATA_JWT: 'test-only-pinata-token', RELAYER_PRIVATE_KEY: `0x${'11'.repeat(32)}`,
     PANDU_REGISTRY_ADDRESS: `0x${'22'.repeat(20)}`, PUBLIC_TOKEN_SECRET: 'test-only-public-secret-value-32-bytes',
+    GOOGLE_SUB_PEPPER: 'test-only-google-sub-pepper-with-32-bytes',
   };
   assert.equal(loadRuntimeConfig(base).NODE_ENV, 'production');
   assert.throws(() => loadRuntimeConfig({ ...base, RATE_LIMIT_FAIL_CLOSED: 'false' }), /RATE_LIMIT_FAIL_CLOSED/);

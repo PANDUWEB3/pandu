@@ -916,4 +916,4 @@ app.get('/api/verify/:proofId', async (req, res) => {
 app.use(errorHandler);
 await mkdir(path.dirname(dataFile), { recursive: true });
 await loadState();
-app.listen(port, '127.0.0.1', () => console.info(JSON.stringify({ level: 'info', event: 'server_started', host: '127.0.0.1', port })));
+app.listen(port, '0.0.0.0', () => console.info(JSON.stringify({ level: 'info', event: 'server_started', host: '0.0.0.0', port })));

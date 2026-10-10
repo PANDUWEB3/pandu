@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: pandu-api
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: TRUST_PROXY
+        value: "1"
+      - key: RATE_LIMIT_FAIL_CLOSED
+        value: "true"
+      - key: DEMO_ROUTES
+        value: "false"
+      - key: PANDU_CHAIN
+        value: arbitrum-sepolia
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: PINATA_JWT
+        sync: false
+      - key: RELAYER_PRIVATE_KEY
+        sync: false
+      - key: PANDU_REGISTRY_ADDRESS
+        sync: false
+      - key: GOOGLE_SUB_PEPPER
+        generateValue: true
+      - key: PUBLIC_TOKEN_SECRET
+        generateValue: true

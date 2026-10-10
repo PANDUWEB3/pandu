@@ -1,5 +1,9 @@
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import readline from 'node:readline/promises';
+import { stdin as input, stdout as output } from 'node:process';
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -17,9 +21,9 @@ const isExecute = process.argv.includes('--execute');
 
 async function main() {
   console.log(`=== SUPABASE STORAGE CLEANUP MIGRATION ===`);
-  console.log(`Mode: ${isExecute ? 'EXECUTE (REAL DELETION)' : 'DRY-RUN (Simulasi, tidak menghapus file)'}\n`);
+  console.log(`Mode: ${isExecute ? 'EXECUTE (REAL DELETION WITH BACKUP)' : 'DRY-RUN (Simulasi, tidak mengubah/menghapus file)'}\n`);
 
-  // 1. Check if bucket exists
+  // 1. Cek keberadaan bucket
   const { data: buckets, error: bucketsErr } = await supabase.storage.listBuckets();
   if (bucketsErr) {
     console.error('Gagal mengambil daftar bucket:', bucketsErr.message);
@@ -28,13 +32,13 @@ async function main() {
 
   const targetBucket = buckets.find(b => b.id === 'quality-evidence');
   if (!targetBucket) {
-    console.log('Bucket "quality-evidence" tidak ditemukan atau sudah dihapus.');
+    console.log('Bucket "quality-evidence" tidak ditemukan atau sudah dibersihkan.');
     return;
   }
 
   console.log(`Bucket "quality-evidence" ditemukan. Memindai berkas...`);
 
-  // 2. List all files in the bucket
+  // 2. Daftar seluruh berkas
   const { data: files, error: filesErr } = await supabase.storage.from('quality-evidence').list();
   if (filesErr) {
     console.error('Gagal memindai berkas di bucket:', filesErr.message);
@@ -47,15 +51,49 @@ async function main() {
   }
 
   if (!isExecute) {
-    console.log('\n[DRY RUN SELESAI] Tidak ada berkas yang dihapus.');
-    console.log('Untuk mengeksekusi penghapusan nyata, jalankan: node scripts/migrate-cleanup-storage.mjs --execute');
+    console.log('\n[DRY RUN SELESAI] Tidak ada berkas yang diubah atau dihapus.');
+    console.log('Untuk mengeksekusi migrasi nyata (dengan backup lokal otomatis & konfirmasi interaktif):');
+    console.log('Jalankan: node scripts/migrate-cleanup-storage.mjs --execute\n');
     return;
   }
 
-  // Real deletion execution
+  // 3. Konfirmasi interaktif wajib
+  const rl = readline.createInterface({ input, output });
+  try {
+    console.log('\nPERINGATAN: Operasi ini akan mencadangkan (backup) berkas lalu menghapusnya secara permanen dari Supabase Storage.');
+    const answer = await rl.question('Ketik "HAPUS" untuk melanjutkan, atau teks lain untuk membatalkan: ');
+    if (answer.trim() !== 'HAPUS') {
+      console.log('Operasi dibatalkan oleh pengguna.');
+      return;
+    }
+  } finally {
+    rl.close();
+  }
+
+  // 4. Langkah Backup sebelum penghapusan
   if (files.length > 0) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupDir = path.resolve(process.cwd(), 'data', 'backups', `storage-backup-${timestamp}`);
+    await mkdir(backupDir, { recursive: true });
+    console.log(`\n[LANGKAH BACKUP] Mengunduh ${files.length} berkas ke direktori lokal: ${backupDir}...`);
+
+    for (const f of files) {
+      console.log(` - Mengunduh ${f.name}...`);
+      const { data: blob, error: dlErr } = await supabase.storage.from('quality-evidence').download(f.name);
+      if (dlErr) {
+        console.error(`Gagal mencadangkan berkas ${f.name}:`, dlErr.message);
+        console.error('Proses penghapusan DIBATALKAN untuk mencegah kehilangan data.');
+        process.exit(1);
+      }
+      const arrayBuffer = await blob.arrayBuffer();
+      const filePath = path.join(backupDir, f.name);
+      await writeFile(filePath, Buffer.from(arrayBuffer));
+    }
+    console.log(`Semua berkas berhasil dicadangkan ke ${backupDir}`);
+
+    // 5. Penghapusan berkas
     const fileNames = files.map(f => f.name);
-    console.log(`\nMenghapus ${fileNames.length} berkas...`);
+    console.log(`\n[LANGKAH PENGHAPUSAN] Menghapus ${fileNames.length} berkas dari Supabase Storage...`);
     const { data: delData, error: delErr } = await supabase.storage.from('quality-evidence').remove(fileNames);
     if (delErr) {
       console.error('Gagal menghapus berkas:', delErr.message);
@@ -64,7 +102,7 @@ async function main() {
     console.log('Berkas berhasil dihapus:', delData);
   }
 
-  // Delete bucket
+  // 6. Hapus bucket
   console.log('Menghapus bucket "quality-evidence"...');
   const { error: emptyErr } = await supabase.storage.deleteBucket('quality-evidence');
   if (emptyErr) {
@@ -72,6 +110,7 @@ async function main() {
     process.exit(1);
   }
   console.log('Bucket "quality-evidence" berhasil dihapus.');
+  console.log('=== SELESAI ===');
 }
 
 main().catch(err => {

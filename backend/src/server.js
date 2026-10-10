@@ -485,6 +485,11 @@ app.post('/api/organizations/:orgId/proofs', requireSupabaseUser, async (req, re
     const parsed = CreateProofBodySchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Input bukti tidak valid.' });
     const { inspectionId, evidence } = parsed.data;
+    let evidenceItems = evidence;
+    if (!evidenceItems || !evidenceItems.length) {
+      const { data: dbFiles } = await supabaseAdmin.from('evidence_files').select('cid,sha256').eq('organization_id', orgId).eq('inspection_id', inspectionId);
+      evidenceItems = dbFiles || [];
+    }
     const { inspection, batch, material, supplier } = await getBatchDetails(orgId, inspectionId);
     if (inspection.status !== 'approved' || inspection.result_summary?.result !== 'PASS') return res.status(409).json({ error: 'Bukti hanya dapat dibuat dari inspeksi PASS yang sudah disetujui QA.' });
     const { data: existing } = await supabaseAdmin.from('quality_proofs').select('*').eq('organization_id', orgId).eq('inspection_id', inspectionId).maybeSingle();
@@ -500,7 +505,7 @@ app.post('/api/organizations/:orgId/proofs', requireSupabaseUser, async (req, re
       material,
       supplier,
       inspection: { checks: inspection.result_summary.checks, result: inspection.result_summary.result },
-      evidence: (evidence || []).map((item) => ({ cid: item.cid, sha256: String(item.sha256).replace(/^\\x/, '') })).sort((a, b) => a.cid.localeCompare(b.cid)),
+      evidence: evidenceItems.map((item) => ({ cid: item.cid, sha256: String(item.sha256).replace(/^\\x/, '') })).sort((a, b) => a.cid.localeCompare(b.cid)),
       salt,
       approvedAt: inspection.reviewed_at,
     };
@@ -860,7 +865,14 @@ app.post('/api/anchor', async (_req, res) => {
       const revertData = [readError.data, readError.info?.error?.data, readError.error?.data].find((value) => typeof value === 'string' && value.startsWith('0x'));
       if (!revertData || revertData.slice(0, 10).toLowerCase() !== selector) throw readError;
     }
-    const tx = await registry.anchorProof(proofId, batchRef, digest);
+    const { signature, attester, deadline } = req.body || {};
+    if (!signature || !attester || !deadline) {
+      return res.status(400).json({ error: 'Pada kontrak v2, anchorProof memerlukan tanda tangan EIP-712 dari penerbit (attester, deadline, signature). Kunci penerbit tidak disimpan di server.' });
+    }
+    const tx = await sendWithRetry(
+      () => registry.anchorProof(proofId, batchRef, digest, attester, deadline, signature),
+      'anchorProof'
+    );
     state.anchor.transactionHash = tx.hash; await persist();
     const receipt = await tx.wait(1);
     if (!receipt || receipt.status !== 1) throw new Error('Transaksi gagal pada jaringan.');
@@ -875,17 +887,33 @@ app.post('/api/anchor', async (_req, res) => {
     state.anchor = { ...state.anchor, status: state.anchor.transactionHash ? 'PENDING' : 'FAILED', error: error.shortMessage || error.message };
     const savedProof = state.proofArchive.find((entry) => entry.id === state.proof?.id);
     if (savedProof) savedProof.anchor = { ...state.anchor };
-    await persist(); res.status(502).json({ ...summarize(), error: error.shortMessage || error.message });
+    await persist();
+    const customMsg = mapContractError(error);
+    res.status(502).json({ ...summarize(), error: customMsg || error.shortMessage || error.message });
   }
 });
 
-app.post('/api/revoke', async (_req, res) => {
+app.post('/api/revoke', async (req, res) => {
   if (!state.proof || state.anchor.status !== 'CONFIRMED') return res.status(409).json({ error: 'Hanya proof yang sudah terekam yang dapat dicabut.' });
   if (!process.env.RELAYER_PRIVATE_KEY) return res.status(503).json({ error: 'Relayer belum siap. Atur RELAYER_PRIVATE_KEY di backend/.env.' });
   if (chainName === 'arbitrum-one' && process.env.ENABLE_MAINNET_ANCHOR !== 'true') return res.status(423).json({ error: 'Pencabutan mainnet dinonaktifkan. Aktifkan ENABLE_MAINNET_ANCHOR=true hanya setelah pemeriksaan produksi disetujui.' });
   try {
     const provider = getProvider(); const wallet = new Wallet(process.env.RELAYER_PRIVATE_KEY || '', provider);
-    const registry = getRegistry(wallet); const tx = await registry.revokeProof(proofIdBytes(state.proof.id));
+    const registry = getRegistry(wallet);
+    const { reasonHash, signature, deadline } = req.body || {};
+    const reason = reasonHash || id('Pencabutan bukti demo');
+    let tx;
+    if (signature && deadline) {
+      tx = await sendWithRetry(
+        () => registry.revokeProofWithSig(proofIdBytes(state.proof.id), reason, deadline, signature),
+        'revokeProofWithSig'
+      );
+    } else {
+      tx = await sendWithRetry(
+        () => registry.revokeProof(proofIdBytes(state.proof.id), reason),
+        'revokeProof'
+      );
+    }
     const receipt = await tx.wait(1);
     if (!receipt || receipt.status !== 1) throw new Error('Transaksi pencabutan gagal.');
     const proof = await registry.getProof(proofIdBytes(state.proof.id));
@@ -894,7 +922,10 @@ app.post('/api/revoke', async (_req, res) => {
     const savedProof = state.proofArchive.find((entry) => entry.id === state.proof.id);
     if (savedProof) savedProof.anchor = { ...state.anchor };
     audit('PROOF_REVOKED', wallet.address); await persist(); res.json(summarize());
-  } catch (error) { res.status(502).json({ error: error.shortMessage || error.message }); }
+  } catch (error) {
+    const customMsg = mapContractError(error);
+    res.status(502).json({ error: customMsg || error.shortMessage || error.message });
+  }
 });
 
 async function verifyProof(proofId) {

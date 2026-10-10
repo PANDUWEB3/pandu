@@ -15,3 +15,9 @@ trash/
 .temp/
 **/.temp/
 *.tsbuildinfo
+
+frontend/output/
+frontend/test-results/
+frontend/metamask-logo-temp/
+frontend/metamask-logo-pack.zip
+smart-contract/

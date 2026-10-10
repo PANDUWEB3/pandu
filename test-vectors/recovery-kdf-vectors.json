@@ -1,0 +1,47 @@
+{
+  "description": "Vektor KDF KEK recovery PANDU: PBKDF2-SHA256 minimal 600.000 iterasi (Argon2id direkomendasikan untuk iterasi berikutnya).",
+  "kdf": "PBKDF2-SHA256",
+  "minimumIterations": 600000,
+  "minimumPassphraseLength": 12,
+  "vectors": [
+    {
+      "description": "Passphrase standar, 600.000 iterasi, salt 16 byte",
+      "passphrase": "PANDU-recovery-2026-A1",
+      "saltHex": "00112233445566778899aabbccddeeff",
+      "iterations": 600000,
+      "derivedKeyHex": "d0006c2769bc7bc08f9b1aca87c662cfdc938bc5f5afd85aca28893ea89a37b8"
+    },
+    {
+      "description": "Passphrase panjang dengan spasi dan simbol, 600.000 iterasi",
+      "passphrase": "correct horse battery staple 2026!",
+      "saltHex": "ffeeddbbaa9988776655443322110099",
+      "iterations": 600000,
+      "derivedKeyHex": "cb564931a2146f576a0c3d7f5bb5336135d7591513e3eb77e0b7589946b84d0e"
+    },
+    {
+      "description": "Regresi format lama: metadata tersimpan 100.000 iterasi tetap dapat dibuka",
+      "passphrase": "legacy-passphrase-1",
+      "saltHex": "0123456789abcdef0123456789abcdef",
+      "iterations": 100000,
+      "derivedKeyHex": "fc70f9db5a163dbcfb766e222c69b2131d34e6d2b482f3968d79644b68e08081"
+    }
+  ],
+  "invalidPassphrases": [
+    {
+      "value": "short",
+      "reason": "panjang < 12"
+    },
+    {
+      "value": "abcdefghijk",
+      "reason": "tanpa angka"
+    },
+    {
+      "value": "123456789012",
+      "reason": "tanpa huruf"
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaa",
+      "reason": "satu karakter berulang"
+    }
+  ]
+}

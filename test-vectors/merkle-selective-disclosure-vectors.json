@@ -1,0 +1,472 @@
+{
+  "description": "Vektor Merkle PANDU: domain leaf 0x00 / node 0x01 (RFC 6962 §2.1), leaf ganjil dipromosikan, urutan leaf berdasarkan path.",
+  "leafPrefix": "0x00",
+  "nodePrefix": "0x01",
+  "leafPreimage": "canonicalJson({path, salt, value})",
+  "cases": [
+    {
+      "description": "8 leaf (pohon penuh, tanpa promosi)",
+      "sortedPaths": [
+        "batchRef",
+        "evidence[0].cid",
+        "inspection.checks",
+        "inspection.result",
+        "material",
+        "proofId",
+        "supplier",
+        "version"
+      ],
+      "root": "25fea1de114609c0d6dd2c3b69a24551bef3813182cedabf38eab95774b7b46b",
+      "leafHashes": [
+        "36b3a4b3889afa27fc4cd1039b00a12dc40a39f12d430680e032f21625834c67",
+        "c58909b86d6b174a606d71ca0bd7f6a1f4dd0bb1c3a836acf6ff83207755fc19",
+        "a1f40c919404233796ee011b3bffbb14500ca7fc39259b4134fbfc216ff4ef4e",
+        "149f1d5a474002f8c843db9ed32de59e5826a8b31295f03bf170836e005d3d76",
+        "3699d8b95be42611642e45f13bed6bb9c6b5b6b1a59e3729e3a4ef154cf45178",
+        "e036ee53fd3e0af8c1385e7649ff49e625481c87187f4c38a6d56c6cc1d02d91",
+        "5cc46282de6575d68c6a297e57791738b7e8425de1b45145b5668f8b7e69ca23",
+        "c9118a2d0644de4119abc8e6582a44022db00d69d45dde340bd78aa1e5ef33bf"
+      ],
+      "auditPaths": {
+        "batchRef": [
+          {
+            "sibling": "c58909b86d6b174a606d71ca0bd7f6a1f4dd0bb1c3a836acf6ff83207755fc19",
+            "isRight": true
+          },
+          {
+            "sibling": "8db126ad799004dc968bae0d3f49768e3428aaecb9819d2582fed4d3677734a5",
+            "isRight": true
+          },
+          {
+            "sibling": "325b37254c28264a0ec83046ee7288019328ed784c809034131551e08ec7af67",
+            "isRight": true
+          }
+        ],
+        "evidence[0].cid": [
+          {
+            "sibling": "36b3a4b3889afa27fc4cd1039b00a12dc40a39f12d430680e032f21625834c67",
+            "isRight": false
+          },
+          {
+            "sibling": "8db126ad799004dc968bae0d3f49768e3428aaecb9819d2582fed4d3677734a5",
+            "isRight": true
+          },
+          {
+            "sibling": "325b37254c28264a0ec83046ee7288019328ed784c809034131551e08ec7af67",
+            "isRight": true
+          }
+        ],
+        "inspection.checks": [
+          {
+            "sibling": "149f1d5a474002f8c843db9ed32de59e5826a8b31295f03bf170836e005d3d76",
+            "isRight": true
+          },
+          {
+            "sibling": "d248d872199f1887f355b092c0647a2dfc9b8a46694c41ae7916fb82f7b4858c",
+            "isRight": false
+          },
+          {
+            "sibling": "325b37254c28264a0ec83046ee7288019328ed784c809034131551e08ec7af67",
+            "isRight": true
+          }
+        ],
+        "inspection.result": [
+          {
+            "sibling": "a1f40c919404233796ee011b3bffbb14500ca7fc39259b4134fbfc216ff4ef4e",
+            "isRight": false
+          },
+          {
+            "sibling": "d248d872199f1887f355b092c0647a2dfc9b8a46694c41ae7916fb82f7b4858c",
+            "isRight": false
+          },
+          {
+            "sibling": "325b37254c28264a0ec83046ee7288019328ed784c809034131551e08ec7af67",
+            "isRight": true
+          }
+        ],
+        "material": [
+          {
+            "sibling": "e036ee53fd3e0af8c1385e7649ff49e625481c87187f4c38a6d56c6cc1d02d91",
+            "isRight": true
+          },
+          {
+            "sibling": "c87a43b8547c1f630d85e769da0cc88461971f8c1a60239b16d4dd7e1a6a9fa2",
+            "isRight": true
+          },
+          {
+            "sibling": "54d1d976585d4cb36426e55614a16e26fd217f1219861e2e660c322513db31c6",
+            "isRight": false
+          }
+        ],
+        "proofId": [
+          {
+            "sibling": "3699d8b95be42611642e45f13bed6bb9c6b5b6b1a59e3729e3a4ef154cf45178",
+            "isRight": false
+          },
+          {
+            "sibling": "c87a43b8547c1f630d85e769da0cc88461971f8c1a60239b16d4dd7e1a6a9fa2",
+            "isRight": true
+          },
+          {
+            "sibling": "54d1d976585d4cb36426e55614a16e26fd217f1219861e2e660c322513db31c6",
+            "isRight": false
+          }
+        ],
+        "supplier": [
+          {
+            "sibling": "c9118a2d0644de4119abc8e6582a44022db00d69d45dde340bd78aa1e5ef33bf",
+            "isRight": true
+          },
+          {
+            "sibling": "282cc6f197de511814e5602f861442275b683bd72b6563b7768f69d440575b2e",
+            "isRight": false
+          },
+          {
+            "sibling": "54d1d976585d4cb36426e55614a16e26fd217f1219861e2e660c322513db31c6",
+            "isRight": false
+          }
+        ],
+        "version": [
+          {
+            "sibling": "5cc46282de6575d68c6a297e57791738b7e8425de1b45145b5668f8b7e69ca23",
+            "isRight": false
+          },
+          {
+            "sibling": "282cc6f197de511814e5602f861442275b683bd72b6563b7768f69d440575b2e",
+            "isRight": false
+          },
+          {
+            "sibling": "54d1d976585d4cb36426e55614a16e26fd217f1219861e2e660c322513db31c6",
+            "isRight": false
+          }
+        ]
+      },
+      "leaves": [
+        {
+          "path": "batchRef",
+          "value": "BATCH-2026-X",
+          "salt": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+        },
+        {
+          "path": "evidence[0].cid",
+          "value": "QmZtmD2qtQgLtGuxUoo7773Ku6ZjfNVNyd47vEDALGBLqY",
+          "salt": "1818181818181818181818181818181818181818181818181818181818181818"
+        },
+        {
+          "path": "inspection.checks",
+          "value": [
+            {
+              "key": "kadar_air",
+              "pass": true
+            }
+          ],
+          "salt": "0707070707070707070707070707070707070707070707070707070707070707"
+        },
+        {
+          "path": "inspection.result",
+          "value": "PASS",
+          "salt": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"
+        },
+        {
+          "path": "material",
+          "value": "Semen Portland Tipe I",
+          "salt": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+        },
+        {
+          "path": "proofId",
+          "value": "PANDU-8F3A19B2",
+          "salt": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+        },
+        {
+          "path": "supplier",
+          "value": "PT Indocement Tunggal Tbk",
+          "salt": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+        },
+        {
+          "path": "version",
+          "value": 1,
+          "salt": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        }
+      ]
+    },
+    {
+      "description": "7 leaf ganjil (leaf terakhir dipromosikan)",
+      "sortedPaths": [
+        "batchRef",
+        "inspection.checks",
+        "inspection.result",
+        "material",
+        "proofId",
+        "supplier",
+        "version"
+      ],
+      "root": "f6d9ac5741aa222cc5fae8c123c8434457d594d61f746b853353675146785451",
+      "leafHashes": [
+        "36b3a4b3889afa27fc4cd1039b00a12dc40a39f12d430680e032f21625834c67",
+        "a1f40c919404233796ee011b3bffbb14500ca7fc39259b4134fbfc216ff4ef4e",
+        "149f1d5a474002f8c843db9ed32de59e5826a8b31295f03bf170836e005d3d76",
+        "3699d8b95be42611642e45f13bed6bb9c6b5b6b1a59e3729e3a4ef154cf45178",
+        "e036ee53fd3e0af8c1385e7649ff49e625481c87187f4c38a6d56c6cc1d02d91",
+        "5cc46282de6575d68c6a297e57791738b7e8425de1b45145b5668f8b7e69ca23",
+        "c9118a2d0644de4119abc8e6582a44022db00d69d45dde340bd78aa1e5ef33bf"
+      ],
+      "auditPaths": {
+        "batchRef": [
+          {
+            "sibling": "a1f40c919404233796ee011b3bffbb14500ca7fc39259b4134fbfc216ff4ef4e",
+            "isRight": true
+          },
+          {
+            "sibling": "c25404b2f468b4b21f18e918f273dd04ad908e6838769c19b37c6ceeef14701c",
+            "isRight": true
+          },
+          {
+            "sibling": "467f95a662c42b75e4afbad44ea979f82d15d49e47517837a09436299fd913a5",
+            "isRight": true
+          }
+        ],
+        "inspection.checks": [
+          {
+            "sibling": "36b3a4b3889afa27fc4cd1039b00a12dc40a39f12d430680e032f21625834c67",
+            "isRight": false
+          },
+          {
+            "sibling": "c25404b2f468b4b21f18e918f273dd04ad908e6838769c19b37c6ceeef14701c",
+            "isRight": true
+          },
+          {
+            "sibling": "467f95a662c42b75e4afbad44ea979f82d15d49e47517837a09436299fd913a5",
+            "isRight": true
+          }
+        ],
+        "inspection.result": [
+          {
+            "sibling": "3699d8b95be42611642e45f13bed6bb9c6b5b6b1a59e3729e3a4ef154cf45178",
+            "isRight": true
+          },
+          {
+            "sibling": "efb860777f97bf7fbcae03ea064c7b50851b4b83b04f4007a4399d5296538ff5",
+            "isRight": false
+          },
+          {
+            "sibling": "467f95a662c42b75e4afbad44ea979f82d15d49e47517837a09436299fd913a5",
+            "isRight": true
+          }
+        ],
+        "material": [
+          {
+            "sibling": "149f1d5a474002f8c843db9ed32de59e5826a8b31295f03bf170836e005d3d76",
+            "isRight": false
+          },
+          {
+            "sibling": "efb860777f97bf7fbcae03ea064c7b50851b4b83b04f4007a4399d5296538ff5",
+            "isRight": false
+          },
+          {
+            "sibling": "467f95a662c42b75e4afbad44ea979f82d15d49e47517837a09436299fd913a5",
+            "isRight": true
+          }
+        ],
+        "proofId": [
+          {
+            "sibling": "5cc46282de6575d68c6a297e57791738b7e8425de1b45145b5668f8b7e69ca23",
+            "isRight": true
+          },
+          {
+            "sibling": "c9118a2d0644de4119abc8e6582a44022db00d69d45dde340bd78aa1e5ef33bf",
+            "isRight": true
+          },
+          {
+            "sibling": "0caa6db647c107fb7b7209f1d785be0e776ecd17e5f6452539d30eae42b9eed9",
+            "isRight": false
+          }
+        ],
+        "supplier": [
+          {
+            "sibling": "e036ee53fd3e0af8c1385e7649ff49e625481c87187f4c38a6d56c6cc1d02d91",
+            "isRight": false
+          },
+          {
+            "sibling": "c9118a2d0644de4119abc8e6582a44022db00d69d45dde340bd78aa1e5ef33bf",
+            "isRight": true
+          },
+          {
+            "sibling": "0caa6db647c107fb7b7209f1d785be0e776ecd17e5f6452539d30eae42b9eed9",
+            "isRight": false
+          }
+        ],
+        "version": [
+          {
+            "sibling": "4f7f0a77d9f1b02f4c2abe419b4804c6be7406edc774f82fd814663b44a2de4d",
+            "isRight": false
+          },
+          {
+            "sibling": "0caa6db647c107fb7b7209f1d785be0e776ecd17e5f6452539d30eae42b9eed9",
+            "isRight": false
+          }
+        ]
+      },
+      "leaves": [
+        {
+          "path": "batchRef",
+          "value": "BATCH-2026-X",
+          "salt": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+        },
+        {
+          "path": "inspection.checks",
+          "value": [
+            {
+              "key": "kadar_air",
+              "pass": true
+            }
+          ],
+          "salt": "0707070707070707070707070707070707070707070707070707070707070707"
+        },
+        {
+          "path": "inspection.result",
+          "value": "PASS",
+          "salt": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"
+        },
+        {
+          "path": "material",
+          "value": "Semen Portland Tipe I",
+          "salt": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+        },
+        {
+          "path": "proofId",
+          "value": "PANDU-8F3A19B2",
+          "salt": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+        },
+        {
+          "path": "supplier",
+          "value": "PT Indocement Tunggal Tbk",
+          "salt": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+        },
+        {
+          "path": "version",
+          "value": 1,
+          "salt": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        }
+      ]
+    },
+    {
+      "description": "3 leaf ganjil (kasus terkecil dengan promosi)",
+      "sortedPaths": [
+        "batchRef",
+        "proofId",
+        "version"
+      ],
+      "root": "2e3facd0a7c714d16e0608f2b869d54b1e2508ba729615373ca113065dc885dd",
+      "leafHashes": [
+        "36b3a4b3889afa27fc4cd1039b00a12dc40a39f12d430680e032f21625834c67",
+        "e036ee53fd3e0af8c1385e7649ff49e625481c87187f4c38a6d56c6cc1d02d91",
+        "c9118a2d0644de4119abc8e6582a44022db00d69d45dde340bd78aa1e5ef33bf"
+      ],
+      "auditPaths": {
+        "batchRef": [
+          {
+            "sibling": "e036ee53fd3e0af8c1385e7649ff49e625481c87187f4c38a6d56c6cc1d02d91",
+            "isRight": true
+          },
+          {
+            "sibling": "c9118a2d0644de4119abc8e6582a44022db00d69d45dde340bd78aa1e5ef33bf",
+            "isRight": true
+          }
+        ],
+        "proofId": [
+          {
+            "sibling": "36b3a4b3889afa27fc4cd1039b00a12dc40a39f12d430680e032f21625834c67",
+            "isRight": false
+          },
+          {
+            "sibling": "c9118a2d0644de4119abc8e6582a44022db00d69d45dde340bd78aa1e5ef33bf",
+            "isRight": true
+          }
+        ],
+        "version": [
+          {
+            "sibling": "52cb618c7dbab27ee6cffe51929e9100e73d843cac7d56671fb0ae64f24efab0",
+            "isRight": false
+          }
+        ]
+      },
+      "leaves": [
+        {
+          "path": "batchRef",
+          "value": "BATCH-2026-X",
+          "salt": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+        },
+        {
+          "path": "proofId",
+          "value": "PANDU-8F3A19B2",
+          "salt": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+        },
+        {
+          "path": "version",
+          "value": 1,
+          "salt": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        }
+      ]
+    },
+    {
+      "description": "1 leaf (root = hash leaf, sesuai MTH({d(0)}))",
+      "sortedPaths": [
+        "version"
+      ],
+      "root": "c9118a2d0644de4119abc8e6582a44022db00d69d45dde340bd78aa1e5ef33bf",
+      "leafHashes": [
+        "c9118a2d0644de4119abc8e6582a44022db00d69d45dde340bd78aa1e5ef33bf"
+      ],
+      "auditPaths": {
+        "version": []
+      },
+      "leaves": [
+        {
+          "path": "version",
+          "value": 1,
+          "salt": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        }
+      ]
+    }
+  ],
+  "rfc6962Example": {
+    "description": "Bentuk pohon 7-leaf mengikuti RFC 6962 §2.1.3 (audit path d0 = [b,h,l], d6 = [i,k])",
+    "dataEntries": [
+      "leaf-0",
+      "leaf-1",
+      "leaf-2",
+      "leaf-3",
+      "leaf-4",
+      "leaf-5",
+      "leaf-6"
+    ],
+    "leafHashes": [
+      "305df59f9590c3c9ac63d2b2743c388e3792449078cebf7fb3dbe6471643b2b7",
+      "3145c409f259b7c53e32036090ff76751025a2498ba9823ef718cac50b4e616f",
+      "fca89f57c9f8c8eb4047a7ff9d333acf9e0f3384b20b255bceab0f216dcca267",
+      "f76836325aec5699d8d71f8e42e9d47c5c29b08059ba296384f7ca40ad3a40ae",
+      "ea9fc1a1b6e191b460d0d6306e3e870c173f39330f13cda1b70cfc72bdc398ba",
+      "8f1593cb92f429d9340b9bbc1f0bb122adf8026c42a4a42142e2168931727236",
+      "676f3782f5b3a5fb4370ed49572cedc523f4a66322269c85f2af0509d17b0a4d"
+    ],
+    "auditPathLengthByIndex": {
+      "0": 3,
+      "1": 3,
+      "2": 3,
+      "3": 3,
+      "4": 3,
+      "5": 3,
+      "6": 2
+    },
+    "expectedAuditPathLengths": [
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      2
+    ],
+    "root": "0b007fb915eb9b2a146f54b1c86ec53b664f8e455b7660b0b6ee13edc0d921c0"
+  }
+}

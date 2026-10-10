@@ -28,6 +28,10 @@ The project URL and browser publishable key are configured in ignored `frontend/
 Set the following in ignored `backend/.env` or server secrets:
 
 ```dotenv
+NODE_ENV=production
+TRUST_PROXY=1
+REDIS_URL=rediss://<user>:<password>@<redis-host>:<port>
+RATE_LIMIT_FAIL_CLOSED=true
 SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_SECRET_KEY=<sb_secret_server-only secret>
 PUBLIC_TOKEN_SECRET=<stable random secret, at least 32 chars>
@@ -37,6 +41,8 @@ RELAYER_PRIVATE_KEY=<test-only relayer secret>
 PANDU_REGISTRY_ADDRESS=<verified Arbitrum Sepolia registry>
 ENABLE_MAINNET_ANCHOR=false
 ```
+
+Produksi wajib menyetel `TRUST_PROXY` sesuai jumlah hop proxy tepercaya dan `REDIS_URL` untuk rate limiter lintas instance. Server menolak start produksi bila salah satunya kosong. `RATE_LIMIT_FAIL_CLOSED` default `true` pada produksi; jangan menonaktifkannya di produksi.
 
 The `RELAYER_PRIVATE_KEY` must belong to a disposable test wallet. Do not send private keys, OAuth secrets, or Supabase secret keys through chat. Configure the frontend `VITE_API_URL` to the deployed backend origin before deploying the web app.
 
@@ -67,6 +73,7 @@ No Arbitrum One deployment or mainnet transaction has been run by this setup.
 
 - Frontend host: configure SPA fallback to `index.html`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, and `VITE_API_URL` at build time.
 - Backend host: provide `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `PUBLIC_TOKEN_SECRET`, selected chain RPC, `RELAYER_PRIVATE_KEY`, and matching registry address as runtime secrets.
+- Backend production also requires `NODE_ENV=production`, `TRUST_PROXY`, and `REDIS_URL`; `RATE_LIMIT_FAIL_CLOSED` defaults to `true`.
 - Set `FRONTEND_ORIGIN` to the exact production origin. Configure Supabase redirect allowlist and CORS to match it.
 - Use HTTPS, request limits, structured redacted logs, health monitoring, database backups, and key-rotation procedures. Do not log access tokens, service-role keys, signatures, or uploaded file contents.
 - Run production frontend build and backend syntax checks. Do not start public services before the Supabase migration and secrets are set.

@@ -5,7 +5,7 @@ import { motion, useMotionValue, useReducedMotion, useSpring, useTransform } fro
 /** Logo concept: letter "P" whose bowl rises into an upward arrow. */
 export function LogoMark({ className = 'h-9 w-9' }: { className?: string }) {
   return (
-    <svg viewBox="0 0 40 40" className={className} role="img" aria-label="PANDU logo">
+    <svg viewBox="0 0 40 40" className={className} aria-hidden="true">
       <rect width="40" height="40" rx="11" fill="#F97316" />
       <path d="M13.5 31V10.5" stroke="#fff" strokeWidth="4" strokeLinecap="round" />
       <path d="M13.5 23.5h5.5a7 7 0 0 0 7-7V12" fill="none" stroke="#fff" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
@@ -14,12 +14,13 @@ export function LogoMark({ className = 'h-9 w-9' }: { className?: string }) {
   );
 }
 
-export function Logo({ dark = false }: { dark?: boolean }) {
+export function Logo({ dark = false, size = 'md', variant = 'full', href = '/' }: { dark?: boolean; size?: 'sm' | 'md' | 'lg'; variant?: 'icon' | 'full'; href?: string }) {
   const { t } = useI18n();
+  const dimensions = { sm: ['h-7 w-7', 'text-base'], md: ['h-9 w-9', 'text-xl'], lg: ['h-12 w-12', 'text-2xl'] }[size];
   return (
-    <a href="/" className="group inline-flex items-center gap-2.5" aria-label={t.nav.home}>
-      <LogoMark className="h-9 w-9 transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:-rotate-6" />
-      <span className={`font-display text-xl font-extrabold tracking-tight ${dark ? 'text-pure' : 'text-ink'}`}>PANDU</span>
+    <a href={href} className="group inline-flex items-center gap-2.5" aria-label={t.nav.home}>
+      <LogoMark className={`${dimensions[0]} transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:-rotate-6`} />
+      {variant === 'full' && <span className={`font-display ${dimensions[1]} font-extrabold tracking-tight ${dark ? 'text-pure' : 'text-ink'}`}>PANDU</span>}
     </a>
   );
 }

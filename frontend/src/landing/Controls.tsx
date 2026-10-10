@@ -12,7 +12,7 @@ export function ThemeToggle() {
       onClick={toggle}
       aria-label={dark ? t.ctl.toLight : t.ctl.toDark}
       title={dark ? t.ctl.toLight : t.ctl.toDark}
-      className="relative grid h-10 w-10 cursor-pointer place-items-center overflow-hidden rounded-full bg-mist text-ink-soft ring-1 ring-inset ring-gray-200 transition-all duration-300 hover:text-brand-600 hover:ring-brand"
+      className="relative grid h-11 w-11 cursor-pointer place-items-center overflow-hidden rounded-full bg-mist text-ink-soft ring-1 ring-inset ring-gray-200 transition-all duration-300 hover:text-brand-600 hover:ring-brand"
     >
       <Sun size={18} className={`absolute transition-all duration-300 ${dark ? 'scale-0 -rotate-90 opacity-0' : 'scale-100 rotate-0 opacity-100'}`} />
       <Moon size={18} className={`absolute transition-all duration-300 ${dark ? 'scale-100 rotate-0 opacity-100' : 'scale-0 rotate-90 opacity-0'}`} />
@@ -37,7 +37,7 @@ export function LangSwitch() {
           aria-pressed={lang === l.code}
           aria-label={l.name}
           title={l.name}
-          className={`cursor-pointer rounded-full px-3 py-1.5 text-xs font-bold transition-all duration-300 ${lang === l.code ? 'bg-brand text-pure shadow-sm' : 'text-ink-soft hover:text-brand-600'}`}
+          className={`min-h-11 min-w-11 cursor-pointer rounded-full px-3 py-1.5 text-xs font-bold transition-all duration-300 ${lang === l.code ? 'bg-brand text-pure shadow-sm' : 'text-ink-soft hover:text-brand-600'}`}
         >
           {l.label}
         </button>

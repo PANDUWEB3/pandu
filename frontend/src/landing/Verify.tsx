@@ -6,7 +6,30 @@ import { useI18n } from '../i18n';
 import { Tilt } from './ui';
 import Navbar from './Navbar';
 import Footer from './Footer';
-import { decryptFileClient, deriveKeyFromWallet, deriveKeyFromPasskey, computeCanonicalEvidenceHash, computeFileHmacSha256, sha256Hex } from '../crypto';
+import {
+  decryptFileClient,
+  deriveKeyFromWallet,
+  deriveKeyFromPasskey,
+  computeCanonicalEvidenceHash,
+  computeFileHmacSha256,
+  sha256Hex,
+  recoverDekWithWallet,
+  decryptFileName,
+} from '../crypto';
+import {
+  parseVerifierShareFragment,
+  importSharedDek,
+  unwrapDekForVerifier,
+  importVerifierPrivateKey,
+  generateVerifierKeyPair,
+  exportVerifierPublicKey,
+  exportVerifierPrivateKey,
+  type VerifierSharePayload,
+  type VerifierShareEntryPlain,
+  type VerifierShareEntryWrapped,
+} from '../verifier-share';
+
+const VERIFIER_PRIVKEY_STORAGE = 'PANDU.verifier.privateKey';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8787';
 
@@ -78,6 +101,7 @@ export function VerifyPublic() {
                 <Search size={22} className="absolute left-5 text-ink-soft" />
                 <input 
                   id="proof-id"
+                  aria-label={t.verify.label}
                   value={proofId}
                   onChange={e => { setProofId(e.target.value); setError(''); }}
                   placeholder={t.verify.placeholder}
@@ -136,6 +160,7 @@ export function VerifyPublic() {
 type PublicResult = {
   status: string;
   message: string;
+  legacy?: boolean;
   proof?: any;
   network?: string;
   explorerUrl?: string;
@@ -154,8 +179,11 @@ export function PublicProof({ token }: { token: string }) {
   const { t } = useI18n();
   const [result, setResult] = useState<PublicResult | null>(null);
   const [retry, setRetry] = useState(0);
-  const [decryptMethod, setDecryptMethod] = useState<'wallet' | 'passkey' | 'plaintext'>('wallet');
+  const [decryptMethod, setDecryptMethod] = useState<'share' | 'wallet' | 'passkey' | 'plaintext'>('wallet');
   const [decrypting, setDecrypting] = useState(false);
+  const [share, setShare] = useState<VerifierSharePayload | null>(null);
+  const [shareNotice, setShareNotice] = useState('');
+  const [verifierPublicKeyHex, setVerifierPublicKeyHex] = useState('');
   const [verificationReport, setVerificationReport] = useState<{
     success: boolean;
     fileName?: string;
@@ -177,12 +205,61 @@ export function PublicProof({ token }: { token: string }) {
 
     try {
       const fileBytes = new Uint8Array(await file.arrayBuffer());
-      let decryptedBytes: ArrayBuffer;
-      let decryptedSha256: string;
+      let decryptedBytes: ArrayBuffer | null = null;
+      let decryptedSha256 = '';
+      let activeDek: CryptoKey | null = null;
 
       if (decryptMethod === 'plaintext') {
         decryptedBytes = fileBytes.buffer;
         decryptedSha256 = await sha256Hex(decryptedBytes);
+      } else if (decryptMethod === 'share') {
+        // Berbagi akses verifikator: DEK datang dari fragmen URL (tidak pernah dari server)
+        // dan TIDAK PERNAH memakai frasa sandi pemulihan penerbit.
+        if (!share) {
+          throw new Error(
+            'Tautan berbagi akses tidak ditemukan di URL ini. Minta penerbit membuat tautan berbagi verifikator untuk bukti ini.'
+          );
+        }
+        if (share.proofId && share.proofId !== result.proof.proofId) {
+          throw new Error('Tautan akses ini dibuat untuk bukti lain dan tidak dapat digunakan pada halaman ini.');
+        }
+        let unwrapped = false;
+        if (share.mode === 'ecies') {
+          let privHex = localStorage.getItem(VERIFIER_PRIVKEY_STORAGE) || '';
+          if (!privHex) {
+            privHex =
+              (window.prompt(
+                'Tautan ini dibungkus ke kunci publik verifikator. Tempel kunci privat verifikator (hex PKCS#8):'
+              ) || '').trim();
+          }
+          if (!privHex) throw new Error('Kunci privat verifikator diperlukan untuk membuka tautan ECIES.');
+          const verifierPrivate = await importVerifierPrivateKey(privHex);
+          for (const entry of share.entries as VerifierShareEntryWrapped[]) {
+            try {
+              const dek = await unwrapDekForVerifier(entry.wrap, verifierPrivate);
+              const dec = await decryptFileClient(fileBytes, dek);
+              decryptedBytes = dec.decryptedBytes;
+              decryptedSha256 = dec.decryptedSha256;
+              activeDek = dek;
+              unwrapped = true;
+              break;
+            } catch (_) {}
+          }
+          if (!unwrapped) throw new Error('Kunci privat verifikator tidak cocok dengan pembungkus DEK.');
+        } else {
+          for (const entry of share.entries as VerifierShareEntryPlain[]) {
+            try {
+              const dek = await importSharedDek(entry.dek);
+              const dec = await decryptFileClient(fileBytes, dek);
+              decryptedBytes = dec.decryptedBytes;
+              decryptedSha256 = dec.decryptedSha256;
+              activeDek = dek;
+              unwrapped = true;
+              break;
+            } catch (_) {}
+          }
+          if (!unwrapped) throw new Error('DEK pada tautan berbagi tidak dapat membuka berkas ini.');
+        }
       } else {
         let key: CryptoKey;
         if (decryptMethod === 'wallet') {
@@ -193,9 +270,32 @@ export function PublicProof({ token }: { token: string }) {
           key = await deriveKeyFromPasskey();
         }
 
-        const decrypted = await decryptFileClient(fileBytes, key);
-        decryptedBytes = decrypted.decryptedBytes;
-        decryptedSha256 = decrypted.decryptedSha256;
+        const evidenceList: any[] = result.proof.evidence || [];
+        let unwrapped = false;
+        for (const ev of evidenceList) {
+          if (ev.wrappedKeys?.wrappedBy?.wallet && decryptMethod === 'wallet') {
+            try {
+              const dek = await recoverDekWithWallet(ev.wrappedKeys, key);
+              const dec = await decryptFileClient(fileBytes, dek);
+              decryptedBytes = dec.decryptedBytes;
+              decryptedSha256 = dec.decryptedSha256;
+              activeDek = dek;
+              unwrapped = true;
+              break;
+            } catch (_) {}
+          }
+        }
+
+        if (!unwrapped) {
+          const decrypted = await decryptFileClient(fileBytes, key);
+          decryptedBytes = decrypted.decryptedBytes;
+          decryptedSha256 = decrypted.decryptedSha256;
+          activeDek = key;
+        }
+      }
+
+      if (!decryptedBytes || !decryptedSha256) {
+        throw new Error('Gagal memproses dekripsi berkas.');
       }
 
       // 1. Cek kecocokan HMAC atau hash berkas dengan lampiran bukti di canonical snapshot
@@ -226,6 +326,14 @@ export function PublicProof({ token }: { token: string }) {
         hashList.some((h: string) => h.toLowerCase() === decryptedSha256.toLowerCase())
       );
 
+      // Dekripsi nama berkas jika terenkripsi
+      let displayFileName = file.name;
+      if (activeDek && matchedEvidenceItem?.encryptedName) {
+        try {
+          displayFileName = await decryptFileName(matchedEvidenceItem.encryptedName, activeDek);
+        } catch (_) {}
+      }
+
       // 2. Rakit ulang Canonical Proof Snapshot
       const reconstructedSnapshot = {
         approvedAt: result.proof.approvedAt,
@@ -248,7 +356,7 @@ export function PublicProof({ token }: { token: string }) {
 
       setVerificationReport({
         success: onchainCommitmentMatch && hashMatchedEvidence,
-        fileName: file.name,
+        fileName: displayFileName,
         decryptedSha256,
         decryptedHmac: matchedHmac,
         matchedCid: matchedEvidenceItem?.cid,
@@ -281,6 +389,29 @@ export function PublicProof({ token }: { token: string }) {
     return () => { live = false; }; 
   }, [token, retry]);
 
+  // Baca fragmen URL: tautan berbagi akses verifikator (DEK untuk SATU bukti)
+  useEffect(() => {
+    const parsed = parseVerifierShareFragment(window.location.hash);
+    setShare(parsed);
+    setShareNotice('');
+    if (parsed) setDecryptMethod('share');
+  }, [token]);
+
+  /** Verifikator membuat pasangan kunci sendiri; kunci publik dikirim ke penerbit. */
+  async function createVerifierKeypair() {
+    try {
+      const pair = await generateVerifierKeyPair();
+      const privateKeyHex = await exportVerifierPrivateKey(pair.privateKey);
+      const publicKeyHex = await exportVerifierPublicKey(pair.publicKey);
+      localStorage.setItem(VERIFIER_PRIVKEY_STORAGE, privateKeyHex);
+      setVerifierPublicKeyHex(publicKeyHex);
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(publicKeyHex);
+      setShareNotice('Kunci verifikator dibuat. Kunci publik disalin ke clipboard — kirimkan ke penerbit.');
+    } catch (err: any) {
+      setShareNotice(err.message || 'Gagal membuat kunci verifikator.');
+    }
+  }
+
   // Determine status metadata
   const legend = t.verify.legend;
   let statusInfo = legend.find((l: any) => l.k === 'bad');
@@ -291,13 +422,17 @@ export function PublicProof({ token }: { token: string }) {
     statusInfo = legend.find((l: any) => l.k === 'good');
     toneClass = 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-900/30';
     icon = <BadgeCheck size={28} />;
+  } else if (result?.status === 'LEGACY_UNSIGNED' || result?.status === 'LEGACY_REVOKED') {
+    statusInfo = legend.find((l: any) => l.k === 'legacy');
+    toneClass = 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-900/30';
+    icon = <ShieldCheck size={28} />;
   } else if (result?.status === 'PENDING') {
     statusInfo = legend.find((l: any) => l.k === 'pending');
     toneClass = 'bg-brand-50 text-brand-700 border-brand-200 dark:bg-brand-900/20 dark:text-brand-400 dark:border-brand-900/30';
     icon = <LoaderCircle className="animate-spin" size={28} />;
   }
 
-  const title = statusInfo?.title || 'Belum dapat diperiksa';
+  const title = result?.legacy ? t.proof.status[result.status] : statusInfo?.title || 'Belum dapat diperiksa';
 
   return (
     <div className="lp min-h-screen flex flex-col bg-mist text-ink transition-colors duration-300">
@@ -378,9 +513,10 @@ export function PublicProof({ token }: { token: string }) {
                     </div>
                     {[
                       ['Nomor bukti', result.proof.proofId],
-                      ['Penerbit (Attester)', result.attester],
+                      ['Penerbit (Attester)', result.legacy ? null : result.attester],
+                      ['Relayer v1 (bukan penandatangan)', result.legacy ? result.relayer : null],
                       ['Waktu tercatat', result.anchoredAt ? new Date(result.anchoredAt * 1000).toLocaleString('id-ID') : null],
-                      ['Status', result.status === 'REVOKED' ? 'Dicabut' : result.status === 'VERIFIED' ? 'Valid' : 'Tidak Valid'],
+                      ['Status', result.legacy ? t.proof.status[result.status] : result.status === 'REVOKED' ? 'Dicabut' : result.status === 'VERIFIED' ? 'Valid' : 'Tidak Valid'],
                       ['Waktu pencabutan', result.revokedAt ? new Date(result.revokedAt * 1000).toLocaleString('id-ID') : null],
                       ['Pencabut (Revoker)', result.revoker],
                       ['Alasan pencabutan', result.revokeReason && result.revokeReason !== '0x0000000000000000000000000000000000000000000000000000000000000000' ? result.revokeReason : null],
@@ -409,6 +545,17 @@ export function PublicProof({ token }: { token: string }) {
                     </div>
 
                     <div className="flex flex-wrap gap-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setDecryptMethod('share')}
+                        className={`px-3 py-1.5 rounded-lg font-semibold border transition-all ${
+                          decryptMethod === 'share'
+                            ? 'bg-brand text-white border-brand'
+                            : 'bg-canvas text-ink border-black/10 dark:border-white/10 hover:bg-mist'
+                        }`}
+                      >
+                        Tautan Berbagi Akses
+                      </button>
                       <button
                         type="button"
                         onClick={() => setDecryptMethod('wallet')}
@@ -443,6 +590,40 @@ export function PublicProof({ token }: { token: string }) {
                         Berkas Sudah Terdekripsi
                       </button>
                     </div>
+
+                    {decryptMethod === 'share' && (
+                      <div className="p-3 rounded-xl bg-mist/60 border border-black/5 dark:border-white/5 text-xs text-ink-soft space-y-2">
+                        {share ? (
+                          <p>
+                            <strong className="text-ink">Tautan berbagi akses terdeteksi.</strong>{' '}
+                            {share.mode === 'ecies'
+                              ? 'DEK dibungkus ke kunci publik verifikator (ECIES P-256 + HKDF-SHA256 + AES-256-GCM).'
+                              : `DEK untuk ${share.entries.length} berkas dibawa pada fragmen URL dan tidak pernah dikirim ke server.`}
+                            {share.proofId ? ` · Bukti ${share.proofId}` : ''}
+                          </p>
+                        ) : (
+                          <p>
+                            Halaman ini tidak memuat akses DEK. Minta penerbit membuat tautan berbagi verifikator
+                            untuk bukti ini, atau buat kunci verifikator di bawah dan kirimkan kunci publiknya ke penerbit.
+                          </p>
+                        )}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={createVerifierKeypair}
+                            className="px-3 py-1.5 rounded-lg font-semibold border bg-canvas text-ink border-black/10 dark:border-white/10 hover:bg-mist"
+                          >
+                            {verifierPublicKeyHex ? 'Buat ulang kunci verifikator' : 'Buat kunci verifikator'}
+                          </button>
+                          {verifierPublicKeyHex && (
+                            <code className="break-all text-[10px]">
+                              {verifierPublicKeyHex.slice(0, 24)}…{verifierPublicKeyHex.slice(-16)}
+                            </code>
+                          )}
+                        </div>
+                        {shareNotice && <p className="text-brand font-medium">{shareNotice}</p>}
+                      </div>
+                    )}
 
                     <div className="space-y-2">
                       <label className="block text-xs font-semibold text-ink-soft uppercase tracking-wider">
@@ -512,7 +693,13 @@ export function PublicProof({ token }: { token: string }) {
                               <div><strong>On-chain Commitment di Kontrak:</strong> {result.commitment}</div>
                               <div>
                                 <strong>Status On-chain:</strong>{' '}
-                                {verificationReport.onchainCommitmentMatch && result.status === 'VERIFIED'
+                                {result.legacy
+                                  ? result.status === 'LEGACY_UNSIGNED' && verificationReport.onchainCommitmentMatch
+                                    ? 'Legacy v1: commitment cocok; tanda tangan penerbit tidak diperiksa.'
+                                    : result.status === 'LEGACY_REVOKED'
+                                      ? 'Legacy v1: telah dicabut; tanda tangan penerbit tidak diperiksa.'
+                                      : 'Legacy v1: record tidak cocok; tanda tangan penerbit tidak diperiksa.'
+                                  : verificationReport.onchainCommitmentMatch && result.status === 'VERIFIED'
                                   ? '✓ VALID & IDENTIK (verify() = true)'
                                   : result.status === 'REVOKED'
                                   ? '✗ DICABUT (Revoked)'

@@ -1,15 +1,24 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Boxes, CheckCircle2, CircleHelp, ClipboardCheck, FileCheck2, Factory, Gauge, History, Layers3, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Search, Send, Settings, ShieldCheck, Sun, Truck, Users, WalletCards, XCircle, UserRound, PackagePlus, SlidersHorizontal, ChevronDown, Check, Bell, Unplug, type LucideIcon } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Boxes, CheckCircle2, CircleHelp, ClipboardCheck, FileCheck2, Factory, Gauge, History, Layers3, LoaderCircle, LockKeyhole, LogOut, Moon, Search, Send, Settings, ShieldCheck, Sun, Truck, Users, WalletCards, XCircle, UserRound, PackagePlus, SlidersHorizontal, ChevronDown, Check, Bell, Unplug, type LucideIcon } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import type { Session } from '@supabase/supabase-js';
 import { supabase, supabaseConfigured } from './supabase';
 import { useI18n, type Dict } from './i18n';
 import { useTheme } from './theme';
+import { Logo } from './landing/ui';
 import TiltedCard from './components/TiltedCard';
 import ModernSelect from './components/ModernSelect';
 import CountUp from './landing/reactbits/CountUp';
 import { motion, AnimatePresence } from 'motion/react';
-import { encryptFileClient, deriveKeyFromWallet, deriveKeyFromPasskey, computeCanonicalEvidenceHash } from './crypto';
+import { encryptFileEnvelope, encryptFileName, deriveKeyFromWallet, computeCanonicalEvidenceHash, validateRecoveryPassphrase, recoverDekWithWallet } from './crypto';
+import {
+  buildVerifierSharePayload,
+  buildVerifierShareUrl,
+  wrapDekForVerifier,
+  base64UrlEncode,
+  importVerifierPublicKey,
+  exportDekRaw,
+} from './verifier-share';
 
 declare global { interface Window { ethereum?: { request(args: { method: string; params?: unknown[] }): Promise<unknown> } } }
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8787';
@@ -20,6 +29,7 @@ type Ws = Dict['ws'];
 
 const fill = (text: string, vars: Record<string, string | number>) => text.replace(/\{(\w+)\}/g, (_match, key) => String(vars[key] ?? ''));
 const locale = (lang: string) => (lang === 'id' ? 'id-ID' : 'en-US');
+const displayCategory = (value: string) => value.replace(/\b\w/g, letter => letter.toUpperCase());
 
 const NAV_ICONS: Record<string, LucideIcon> = {
   overview: Gauge, products: PackagePlus, standards: SlidersHorizontal, batches: Boxes, inspection: ClipboardCheck,
@@ -40,7 +50,7 @@ const displayDate = (value: unknown, lang: string) => {
   return Number.isNaN(date.getTime()) ? '—' : new Intl.DateTimeFormat(locale(lang), { dateStyle: 'medium' }).format(date);
 };
 
-function Brand() { return <a className="p-brand" href="/"><span className="p-brand-icon"><ShieldCheck size={21} /></span><span>PANDU<small>QUALITY PROOF</small></span></a>; }
+function Brand() { return <Logo size="md" />; }
 function Status({ children, tone = 'good' }: { children: ReactNode; tone?: string }) { return <span className={`p-status p-status-${tone}`}><i />{children}</span>; }
 
 function MetricCard({ label, value, note, icon }: { label: string; value: number; note: string; icon: ReactNode }) {
@@ -67,6 +77,155 @@ function ProofShareCell({ proof, accessToken, w }: { proof: DbRow; accessToken: 
   if (error) return <span className="p-share-pending" title={error}>{w.proofCell.noLink}</span>;
   if (!url) return <span className="p-share-pending">{w.proofCell.making}</span>;
   return <span className="p-qr-cell"><QRCodeSVG value={url} size={64} level="M" /><a className="p-row-link" target="_blank" rel="noreferrer" href={url}>{w.proofCell.check} <ArrowRight size={13} /></a></span>;
+}
+
+/**
+ * Berbagi akses dekripsi SATU bukti kepada verifikator pihak ketiga.
+ * Dua mode: (1) tautan berisi DEK (fragmen URL), (2) DEK dibungkus ke kunci
+ * publik verifikator (ECIES). Frasa sandi pemulihan TIDAK PERNAH dipakai di sini.
+ */
+function VerifierShareDialog({
+  proof,
+  accessToken,
+  orgId,
+  onClose,
+}: {
+  proof: DbRow;
+  accessToken: string;
+  orgId: string;
+  onClose: () => void;
+}) {
+  const [publicKey, setPublicKey] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [url, setUrl] = useState('');
+
+  async function createShareLink() {
+    setBusy(true);
+    setError('');
+    setUrl('');
+    try {
+      if (!supabase || !window.ethereum) throw new Error('Supabase dan wallet (MetaMask) diperlukan.');
+      const useEcies = publicKey.trim().length > 0;
+      if (useEcies && !/^[A-Fa-f0-9]{160,200}$/.test(publicKey.trim())) {
+        throw new Error('Kunci publik verifikator harus berupa hex SPKI P-256 (sekitar 160-200 karakter hex).');
+      }
+
+      // 1. Tautan verifikasi resmi dari backend (hanya untuk bukti tercatat/dicabut)
+      const shareRes = await fetch(`${API}/api/proofs/${proof.id}/share`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const shareBody = await shareRes.json();
+      if (!shareRes.ok) throw new Error(shareBody.error || 'Tautan verifikasi belum tersedia.');
+      const baseUrl = shareBody.url as string;
+
+      // 2. Ambil hanya file yang tercantum pada snapshot proof ini (bukan semua
+      //    lampiran inspeksi lain yang mungkin ditambahkan sesudah proof dibuat).
+      const proofCids = new Set<string>((proof.public_snapshot?.evidence || []).map((item: any) => item.cid));
+      if (!proofCids.size) throw new Error('Bukti ini tidak mencantumkan lampiran yang dapat dibagikan.');
+      const { data: files, error: filesError } = await supabase
+        .from('evidence_files')
+        .select('cid,original_name')
+        .eq('organization_id', orgId)
+        .eq('inspection_id', proof.inspection_id)
+        .in('cid', [...proofCids]);
+      if (filesError) throw filesError;
+
+      // 3. Penerbit membuka DEK miliknya sendiri memakai KEK wallet (bukan frasa sandi pemulihan)
+      const accounts = (await window.ethereum.request({ method: 'eth_requestAccounts' })) as string[];
+      const kekWallet = await deriveKeyFromWallet(accounts[0]);
+      const verifierPublicKey = useEcies ? await importVerifierPublicKey(publicKey.trim()) : null;
+
+      const entries: Array<Record<string, unknown>> = [];
+      for (const file of files || []) {
+        const metaMatch = String(file.original_name || '').match(/#meta=([^#]+)/);
+        if (!metaMatch) continue;
+        const wrappedMeta = JSON.parse(decodeURIComponent(metaMatch[1]));
+        const dek = await recoverDekWithWallet(wrappedMeta, kekWallet);
+        const rawDek = await exportDekRaw(dek);
+        if (verifierPublicKey) {
+          entries.push({ cid: file.cid, wrap: await wrapDekForVerifier(rawDek, verifierPublicKey) });
+        } else {
+          entries.push({ cid: file.cid, dek: base64UrlEncode(rawDek) });
+        }
+      }
+      if (!entries.length) throw new Error('Bukti ini belum memiliki berkas dengan DEK yang dapat dibagikan.');
+
+      const payload = buildVerifierSharePayload({
+        mode: verifierPublicKey ? 'ecies' : 'dek',
+        proofId: proof.public_id,
+        entries: entries as any,
+      });
+      setUrl(buildVerifierShareUrl(baseUrl, payload));
+    } catch (err: any) {
+      setError(err.message || 'Gagal membuat tautan berbagi akses.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
+      <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <h3 className="flex items-center gap-2 text-lg font-bold text-slate-900 dark:text-slate-100">
+              <LockKeyhole size={18} className="text-brand" /> Bagikan akses verifikator
+            </h3>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Berlaku untuk bukti <strong>{proof.public_id}</strong>. Frasa sandi pemulihan tidak dipakai di sini.
+            </p>
+          </div>
+          <button className="p-icon-button" aria-label="Tutup" onClick={onClose}>×</button>
+        </div>
+
+        <label className="mb-2 block text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">
+          Kunci publik verifikator (opsional, hex SPKI P-256)
+        </label>
+        <textarea
+          className="mb-3 h-20 w-full resize-none rounded-xl border border-slate-200 p-2 font-mono text-[11px] dark:border-slate-700 dark:bg-slate-800"
+          placeholder="Kosongkan untuk tautan berisi DEK (bearer). Isi untuk mode ECIES."
+          value={publicKey}
+          onChange={(e) => setPublicKey(e.target.value)}
+        />
+
+        <div className="flex flex-wrap gap-2">
+          <button className="p-button p-button-primary" disabled={busy} onClick={() => void createShareLink()}>
+            {busy ? <LoaderCircle className="spin" size={16} /> : <LockKeyhole size={16} />} Buat tautan akses
+          </button>
+          {url && (
+            <button
+              className="p-button p-button-outline"
+              onClick={() => navigator.clipboard?.writeText(url).then(() => setError(''))}
+            >
+              <ClipboardCheck size={16} /> Salin tautan
+            </button>
+          )}
+        </div>
+
+        {error && <p className="mt-3 text-xs font-medium text-red-600">{error}</p>}
+        {url && (
+          <div className="mt-3 space-y-2">
+            <p className="text-xs font-semibold text-emerald-600">Tautan akses verifikator siap dibagikan.</p>
+            <div className="flex items-start gap-3">
+              <QRCodeSVG value={url} size={88} level="M" />
+              <a
+                className="p-row-link break-all text-xs"
+                target="_blank"
+                rel="noreferrer"
+                href={url}
+              >
+                {url}
+              </a>
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              Berikan tautan hanya kepada verifikator yang berwenang. Kunci privat verifikator tetap di peramban mereka.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 type TeamMember = { organization_id: string; user_id: string; role: string; status: string; joined_at: string; email: string | null; name: string | null };
@@ -154,6 +313,7 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
   const [session, setSession] = useState<Session | null>(null);
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [orgsReady, setOrgsReady] = useState(false);
+  const organizationLoadRef = useRef<{ userId: string; promise: Promise<void> } | null>(null);
   const [org, setOrg] = useState<Org | null>(null);
   const [rows, setRows] = useState<{ batches: DbRow[]; suppliers: DbRow[]; materials: DbRow[]; profiles: DbRow[]; inspections: DbRow[]; proofs: DbRow[]; wallets: DbRow[]; evidence: DbRow[] }>({ batches: [], suppliers: [], materials: [], profiles: [], inspections: [], proofs: [], wallets: [], evidence: [] });
   const [loading, setLoading] = useState(true);
@@ -161,9 +321,12 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
   const [notice, setNotice] = useState('');
   const [failure, setFailure] = useState('');
   const [search, setSearch] = useState('');
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteIndex, setPaletteIndex] = useState(0);
   const [orgName, setOrgName] = useState('');
   const [industry, setIndustry] = useState('general');
   const [sidebarOpen, setSidebarOpen] = useState(() => typeof window !== 'undefined' ? window.innerWidth > 768 : true);
+  const [mobileRailMenu, setMobileRailMenu] = useState<string | null>(null);
   const [newCode, setNewCode] = useState('');
   const [newBatchSupplier, setNewBatchSupplier] = useState('');
   const [newBatchMaterial, setNewBatchMaterial] = useState('');
@@ -180,11 +343,19 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
   const [memberRole, setMemberRole] = useState('qc');
   const [auditEvents, setAuditEvents] = useState<AuditEntry[]>([]);
   const [explorerLink, setExplorerLink] = useState('');
+  const [shareProof, setShareProof] = useState<DbRow | null>(null);
   const [chainHealth, setChainHealth] = useState<ChainHealth | null>(null);
   const [profileName, setProfileName] = useState('');
   const [profileMenu, setProfileMenu] = useState(false);
   const [orgDropdownOpen, setOrgDropdownOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setPaletteOpen(true); }
+      if (event.key === 'Escape') setPaletteOpen(false);
+    };
+    window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key);
+  }, []);
   useEffect(() => {
     if (!profileMenu && !orgDropdownOpen && !notifOpen) return;
     const close = (e: MouseEvent) => { if (!(e.target as HTMLElement).closest?.('[data-ws-pop]')) { setProfileMenu(false); setOrgDropdownOpen(false); setNotifOpen(false); } };
@@ -206,22 +377,59 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
     setOrgsReady(true);
   }, []);
 
+  const loadOrganizationsOnce = useCallback((currentSession: Session) => {
+    const pending = organizationLoadRef.current;
+    if (pending?.userId === currentSession.user.id) return pending.promise;
+    const promise = loadOrganizations(currentSession).finally(() => {
+      if (organizationLoadRef.current?.promise === promise) organizationLoadRef.current = null;
+    });
+    organizationLoadRef.current = { userId: currentSession.user.id, promise };
+    return promise;
+  }, [loadOrganizations]);
+
   useEffect(() => {
-    if (!supabase) { setLoading(false); return; }
+    if (!supabase) { setOrgsReady(true); setLoading(false); return; }
     let alive = true;
+    let bootstrapTimer = 0;
+    const finishBootstrap = () => {
+      window.clearTimeout(bootstrapTimer);
+      if (alive) { setOrgsReady(true); setLoading(false); }
+    };
+    const startBootstrapTimer = () => {
+      window.clearTimeout(bootstrapTimer);
+      bootstrapTimer = window.setTimeout(() => {
+        if (!alive) return;
+        setFailure(w.gate.bootstrapTimeout);
+        setOrgsReady(true);
+        setLoading(false);
+      }, 15_000);
+    };
+    startBootstrapTimer();
     void supabase.auth.getSession().then(async ({ data, error }) => {
       if (error) throw error;
       if (!alive) return;
       setSession(data.session);
-      if (data.session) await loadOrganizations(data.session);
-    }).catch((error) => { if (alive) setFailure(errorText(error, w)); }).finally(() => { if (alive) { setOrgsReady(true); setLoading(false); } });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, next) => {
+      if (data.session) await loadOrganizationsOnce(data.session);
+      if (alive) setFailure('');
+    }).catch((error) => { if (alive) setFailure(errorText(error, w)); }).finally(finishBootstrap);
+    const { data: listener } = supabase.auth.onAuthStateChange((event, next) => {
       setSession(next);
-      if (!next) { setOrgs([]); setOrg(null); setOrgsReady(true); setRows({ batches: [], suppliers: [], materials: [], profiles: [], inspections: [], proofs: [], wallets: [], evidence: [] }); }
-      else window.setTimeout(() => void loadOrganizations(next).catch((e) => setFailure(errorText(e, w))), 0);
+      if (!next) {
+        window.clearTimeout(bootstrapTimer);
+        setFailure(''); setOrgs([]); setOrg(null); setOrgsReady(true);
+        setRows({ batches: [], suppliers: [], materials: [], profiles: [], inspections: [], proofs: [], wallets: [], evidence: [] });
+      } else if (event === 'SIGNED_IN') {
+        setFailure(''); setOrgsReady(false); setLoading(true); startBootstrapTimer();
+        // INITIAL_SESSION is handled by getSession above. Only SIGNED_IN needs a
+        // second path, and the in-flight promise guard coalesces redirect races.
+        window.setTimeout(() => void loadOrganizationsOnce(next)
+          .then(() => { if (alive) setFailure(''); })
+          .catch((error) => { if (alive) setFailure(errorText(error, w)); })
+          .finally(finishBootstrap), 0);
+      }
     });
-    return () => { alive = false; listener.subscription.unsubscribe(); };
-  }, [loadOrganizations, w]);
+    return () => { alive = false; window.clearTimeout(bootstrapTimer); listener.subscription.unsubscribe(); };
+  }, [loadOrganizationsOnce, w]);
 
   const refresh = useCallback(async () => {
     if (!supabase || !org || !session) return;
@@ -427,22 +635,38 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
     if (!window.ethereum) { setFailure(w.msg.mmMissing); return; }
     
     await perform(async () => {
-      // 1. Derivasi kunci enkripsi dari wallet (HKDF) atau passkey
-      let key: CryptoKey;
-      if (window.ethereum) {
-        const accounts = (await window.ethereum.request({ method: 'eth_requestAccounts' })) as string[];
-        key = await deriveKeyFromWallet(accounts[0]);
-      } else {
-        key = await deriveKeyFromPasskey('PANDU');
-      }
+      // 1. Derivasi KEK dari wallet (HKDF) dan pastikan recovery passphrase tersedia
+      const accounts = (await window.ethereum!.request({ method: 'eth_requestAccounts' })) as string[];
+      const kekWallet = await deriveKeyFromWallet(accounts[0]);
       
-      // 2. Enkripsi berkas menggunakan AES-GCM dan hitung HMAC-SHA256 dengan salt per-file
-      const { payload, fileHmac, fileSalt } = await encryptFileClient(file, key);
+      let recoveryPassphrase = sessionStorage.getItem('PANDU.recovery-passphrase');
+      if (!recoveryPassphrase) {
+        recoveryPassphrase = window.prompt('Masukkan Frasa Sandi Pemulihan (Recovery Passphrase) darurat untuk membungkus DEK berkas:') || '';
+        try {
+          validateRecoveryPassphrase(recoveryPassphrase);
+        } catch (err: any) {
+          throw new Error(`${err.message} Frasa sandi hanya untuk pemulihan milik Anda sendiri, bukan untuk verifikator.`);
+        }
+        sessionStorage.setItem('PANDU.recovery-passphrase', recoveryPassphrase);
+      }
+
+      // 2. Pola Envelope Encryption: Enkripsi berkas menggunakan DEK acak, bungkus DEK dengan KEK Wallet & Recovery Passphrase
+      const fileBytes = await file.arrayBuffer();
+      const { payload, fileHmac, fileSalt, wrappedKeyMeta, dek } = await encryptFileEnvelope(fileBytes, {
+        kekWallet,
+        walletAccount: accounts[0],
+        recoveryPassphrase,
+      });
+
+      // 3. Enkripsi nama berkas asli (original_name) di sisi klien dengan DEK (tidak pernah simpan nama asli dalam plaintext)
+      const encryptedName = await encryptFileName(file.name, dek);
+      const originalNameMeta = `${encryptedName}#salt=${fileSalt}#meta=${encodeURIComponent(JSON.stringify(wrappedKeyMeta))}`;
+
       const encryptedBlob = new Blob([payload], { type: 'application/octet-stream' });
       
-      // 3. Unggah ciphertext ke backend (yang meneruskan ke Pinata IPFS)
+      // 4. Unggah ciphertext ke backend dengan nama anonim (Pinata IPFS)
       const formData = new FormData();
-      formData.append('file', encryptedBlob, file.name + '.enc');
+      formData.append('file', encryptedBlob, `evidence-${fileHmac.slice(0, 12)}.enc`);
       
       const response = await fetch(`${API}/api/evidence`, {
         method: 'POST',
@@ -453,11 +677,12 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || 'Gagal mengunggah file.');
       
+      // 5. Simpan ke database: original_name terenkripsi, sha256 diisi HMAC (TIDAK ADA plaintextSha256)
       const inserted = await supabase!.from('evidence_files').insert({
         organization_id: org.id,
         inspection_id: inspection.id,
         cid: body.cid,
-        original_name: `${file.name}#salt=${fileSalt}`,
+        original_name: originalNameMeta,
         mime_type: 'application/octet-stream',
         byte_size: encryptedBlob.size,
         sha256: `\\x${fileHmac}`,
@@ -581,24 +806,38 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
     await perform(async () => { const { error } = await supabase!.from('user_wallets').delete().eq('id', wallet.id).eq('user_id', session.user.id); if (error) throw error; }, w.msg.walletDisconnected);
   }
 
+  useEffect(() => { if (orgsReady && !session && !failure) window.location.replace('/login'); }, [orgsReady, session, failure]);
+
   const matchingBatches = useMemo(() => rows.batches.filter((row) => `${row.batch_code} ${row.materials?.name || ''} ${row.suppliers?.name || ''}`.toLowerCase().includes(search.toLowerCase())), [rows.batches, search]);
   const openInspectionBatches = useMemo(() => new Set(rows.inspections.filter((item) => item.status !== 'approved').map((item) => item.batch_id)), [rows.inspections]);
   const signOut = () => { void supabase?.auth.signOut(); window.location.href = '/'; };
   if (!supabaseConfigured || !supabase) return <SetupGate w={w} />;
-  if (!orgsReady) return <div className="p-auth-state" aria-busy="true" />;
+  if (!orgsReady) return <div className="p-auth-state p-auth-loading" role="status" aria-live="polite" aria-busy="true"><span className="p-auth-spinner" aria-hidden="true" /><p>{w.gate.checking}</p></div>;
+  if (failure && !session) return <div className="p-auth-state"><CircleHelp size={25} /><h1>{w.gate.bootstrapErrorTitle}</h1><p>{failure}</p><button className="p-button p-button-outline" onClick={() => window.location.reload()}>{w.gate.retry}</button></div>;
   if (!session) return <div className="p-auth-state"><ShieldCheck size={26} /><h1>{w.gate.signInTitle}</h1><p>{w.gate.signInText}</p><a className="p-button p-button-primary" href="/login">{w.gate.signInCta} <ArrowRight size={16} /></a></div>;
-  if (failure && !orgs.length) return <div className="p-auth-state"><CircleHelp size={25} /><h1>{w.gate.orgError}</h1><p>{failure}</p><button className="p-button p-button-outline" onClick={() => void loadOrganizations(session).catch(e => setFailure(errorText(e, w)))}>{w.gate.retry}</button></div>;
+  if (failure && !orgs.length) return <div className="p-auth-state"><CircleHelp size={25} /><h1>{w.gate.orgError}</h1><p>{failure}</p><button className="p-button p-button-outline" onClick={() => window.location.reload()}>{w.gate.retry}</button></div>;
   if (!org) return (
     <div className="p-onboarding">
-      <a href="/" className="p-brand"><span className="p-brand-icon"><ShieldCheck size={21} /></span><span>PANDU<small>{w.gate.brandTag}</small></span></a>
-      <form onSubmit={(event) => void createOrganization(event)}>
-        <span className="p-kicker">{w.gate.onbKicker}</span>
+      <div className="p-onboarding-brand"><Logo dark={mode === 'dark'} /></div>
+      <form className="p-onboarding-card" onSubmit={(event) => void createOrganization(event)}>
+        <div className="p-onboarding-step"><span className="p-onboarding-step-icon"><Factory size={17} /></span><span>{w.gate.onbKicker}</span></div>
         <h1>{w.gate.onbTitle}</h1>
-        <p>{w.gate.onbText}</p>
-        <label>{w.gate.onbName}<input required minLength={2} maxLength={160} value={orgName} onChange={e => setOrgName(e.target.value)} placeholder={w.gate.onbNamePh} /></label>
-        <label>{w.gate.onbIndustry}<ModernSelect value={industry} onChange={setIndustry} options={[ {value: 'general', label: w.gate.industry.general}, {value: 'agriculture', label: w.gate.industry.agriculture}, {value: 'manufacturing', label: w.gate.industry.manufacturing}, {value: 'food', label: w.gate.industry.food}, {value: 'construction', label: w.gate.industry.construction} ]} /></label>
+        <p className="p-onboarding-intro">{w.gate.onbText}</p>
+        <div className="p-onboarding-fields">
+          <label className="p-onboarding-field">
+            <span>{w.gate.onbName}</span>
+            <input aria-describedby="onboarding-name-hint" required minLength={2} maxLength={160} value={orgName} onChange={e => setOrgName(e.target.value)} placeholder={w.gate.onbNamePh} />
+            <small id="onboarding-name-hint">{w.gate.onbNameHint}</small>
+          </label>
+          <label className="p-onboarding-field">
+            <span>{w.gate.onbIndustry}</span>
+            <ModernSelect value={industry} onChange={setIndustry} aria-label={w.gate.onbIndustry} options={[ {value: 'general', label: w.gate.industry.general}, {value: 'agriculture', label: w.gate.industry.agriculture}, {value: 'manufacturing', label: w.gate.industry.manufacturing}, {value: 'food', label: w.gate.industry.food}, {value: 'construction', label: w.gate.industry.construction} ]} />
+            <small>{w.gate.onbIndustryHint}</small>
+          </label>
+        </div>
         {failure && <p className="p-login-note">{failure}</p>}
-        <button className="p-button p-button-primary" disabled={busy}>{busy ? w.gate.onbSaving : w.gate.onbSubmit} <ArrowRight size={16} /></button>
+        <button className="p-button p-button-primary p-onboarding-submit" disabled={busy}>{busy ? w.gate.onbSaving : w.gate.onbSubmit} <ArrowRight size={17} /></button>
+        <div className="p-onboarding-privacy"><LockKeyhole size={15} /><span>{w.gate.onbPrivacy}</span></div>
       </form>
     </div>
   );
@@ -624,7 +863,16 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
     { label: w.nav.gOrg, ids: ['team'] },
     { label: w.nav.gAccount, ids: ['guide', 'settings', 'profile'] },
   ].map(group => ({ label: group.label, ids: group.ids.filter(id => visible[id]) })).filter(group => group.ids.length > 0);
-  const empty = (text: string) => <div className="p-db-empty"><Boxes size={24} /><strong>{w.empty.title}</strong><span>{text}</span></div>;
+  const paletteResults = [
+    ...menuGroups.flatMap(group => group.ids.map(id => ({ id, label: w.nav.items[id as keyof typeof w.nav.items], group: group.label, href: id === 'overview' ? '/workspace' : `/workspace/${id}` }))),
+    ...rows.batches.map(row => ({ id: `batch-${row.id}`, label: `${row.batch_code} · ${row.materials?.name || ''}`, group: w.nav.items.batches, href: '/workspace/batches' })),
+    ...rows.materials.map(row => ({ id: `product-${row.id}`, label: row.name, group: w.nav.items.products, href: '/workspace/products' })),
+    ...rows.suppliers.map(row => ({ id: `supplier-${row.id}`, label: row.name, group: w.nav.items.suppliers, href: '/workspace/suppliers' })),
+    ...rows.inspections.map(row => ({ id: `inspection-${row.id}`, label: `${row.batches?.batch_code || ''} · ${row.status}`, group: w.nav.items.inspection, href: '/workspace/inspection' })),
+    ...rows.proofs.map(row => ({ id: `proof-${row.id}`, label: row.public_id || row.id, group: w.nav.items.proofs, href: '/workspace/proofs' })),
+  ];
+  const filteredPaletteResults = paletteResults.filter(item => !search || item.label.toLowerCase().includes(search.toLowerCase()) || item.group.toLowerCase().includes(search.toLowerCase()));
+  const empty = (text: string, href = '/workspace/products', action = w.empty.action) => <div className="p-db-empty"><Boxes size={24} /><strong>{w.empty.title}</strong><span>{text}</span><a className="p-button p-button-outline" href={href}>{action} <ArrowRight size={14}/></a></div>;
   const table = (headers: string[], content: ReactNode) => <div className="p-table-wrap"><table><thead><tr>{headers.map(h => <th key={h}>{h}</th>)}</tr></thead><tbody>{content}</tbody></table></div>;
   const batchTable = (records: DbRow[]) => table([w.tbl.batchCode, w.tbl.supplier, w.tbl.status, w.tbl.created, w.tbl.inspection], records.map(row => <tr key={row.id}><td><strong>{row.materials?.name || w.tbl.noProduct}</strong><small>{row.batch_code}</small>{!row.material_id && canManageRecords && rows.materials.length > 0 && <ModernSelect className="ms-sm" aria-label={fill(w.tbl.pickProductAria, { code: row.batch_code })} value="" disabled={busy} onChange={val => void assignBatchProduct(row, val)} placeholder={w.tbl.pickProduct} options={rows.materials.map(m => ({value: m.id, label: m.name}))} />}</td><td>{row.suppliers?.name || w.tbl.noSupplier}</td><td><Status tone={row.status === 'accepted' ? 'good' : row.status === 'rejected' ? 'review' : 'pending'}>{row.status}</Status></td><td>{displayDate(row.created_at, lang)}</td><td>{openInspectionBatches.has(row.id) ? <a className="p-row-link" href="/workspace/inspection">{w.tbl.openInspection} <ArrowRight size={13} /></a> : <button className="p-row-link" onClick={() => void createInspection(row.id)} disabled={!canManageRecords || !rows.profiles.length || busy}>{rows.profiles.length ? w.tbl.makeInspection : w.tbl.stdFirst}</button>}</td></tr>));
 
@@ -634,8 +882,7 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
   const syncText = loading ? w.top.syncing : failure ? w.top.check : w.top.synced;
 
   return <div className="p-workspace">
-    <aside className={`p-sidebar ${sidebarOpen ? 'p-sidebar-open translate-x-0' : '-translate-x-full'} transition-transform duration-300 ease-in-out z-40`}>
-      <div className="p-sidebar-brand"><Brand /><button className="p-icon-button p-close-menu !block" aria-label={w.nav.closeNav} onClick={() => setSidebarOpen(false)}>×</button></div>
+    <aside className="p-sidebar" aria-label={w.nav.openNav}>
       
       <div className="ws-org" data-ws-pop>
         <button type="button" onClick={() => setOrgDropdownOpen(o => !o)} aria-expanded={orgDropdownOpen} className={`ws-org-trigger${orgDropdownOpen ? ' is-open' : ''}`}>
@@ -678,32 +925,21 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
         </AnimatePresence>
       </div>
 
-      <div className="p-nav-scroll">
-        {menuGroups.map(group => (
-          <div className="p-nav-group" key={group.label}>
-            <span className="p-nav-caption">{group.label}</span>
-            {group.ids.map(id => {
-              const Icon = NAV_ICONS[id];
-              return (
-                <a href={id === 'overview' ? '/workspace' : `/workspace/${id}`} key={id} className={page === id ? 'active' : ''} onClick={() => { if (typeof window !== 'undefined' && window.innerWidth <= 768) setSidebarOpen(false); }}>
-                  <Icon size={17} /><span className="p-nav-text">{w.nav.items[id as keyof typeof w.nav.items]}</span>
-                  {id === 'inspection' && awaitingInspections > 0 && <span className="p-nav-count">{awaitingInspections}</span>}
-                </a>
-              );
-            })}
-          </div>
-        ))}
-      </div>
-      <div className="p-sidebar-bottom">
-        <a href="/verify" className="p-sidebar-help"><ShieldCheck size={17} /><span><strong>{w.nav.verify}</strong><small>{w.nav.verifyHint}</small></span><ArrowRight size={14} /></a>
-        <button className="p-account-row" onClick={signOut}><span className="p-user-avatar">{(session.user.email || 'U').slice(0,1).toUpperCase()}</span><span><strong>{session.user.user_metadata?.full_name || session.user.email}</strong><small>{w.nav.signOut}</small></span><LogOut size={16} /></button>
-      </div>
+      <nav className="p-nav-scroll" aria-label={w.nav.openNav}>
+        {menuGroups.map(group => {
+          const first = group.ids[0]; const Icon = NAV_ICONS[first]; const active = group.ids.includes(page);
+          return <div key={group.label} className={`p-rail-item${active ? ' active' : ''}${mobileRailMenu === group.label ? ' is-mobile-open' : ''}`}>
+            <a href={first === 'overview' ? '/workspace' : `/workspace/${first}`} className="p-rail-link" aria-label={group.label} aria-expanded={group.ids.length > 1 ? mobileRailMenu === group.label : undefined} aria-current={active ? 'page' : undefined} onClick={event => { if (window.innerWidth < 768 && group.ids.length > 1) { event.preventDefault(); setMobileRailMenu(current => current === group.label ? null : group.label); } }}><Icon size={19}/><span className="p-rail-label">{group.label}</span></a>
+            {group.ids.length > 1 && <div className="p-rail-submenu" role="menu" aria-label={group.label}>{group.ids.map(id => <a role="menuitem" key={id} href={`/workspace/${id}`} onClick={() => setMobileRailMenu(null)} aria-current={page === id ? 'page' : undefined}>{w.nav.items[id as keyof typeof w.nav.items]}{id === 'inspection' && awaitingInspections > 0 && <span className="p-nav-count">{awaitingInspections}</span>}</a>)}</div>}
+          </div>;
+        })}
+      </nav>
     </aside>
     {sidebarOpen && <button className="p-sidebar-scrim md:hidden" aria-label={w.nav.closeNav} onClick={() => setSidebarOpen(false)} />}
     <div className={`p-workspace-main transition-[margin-left,width] duration-300 ease-in-out ${sidebarOpen ? '' : '!ml-0 !w-full'}`}>
       <header className="p-work-top">
-        <button className={`p-icon-button p-menu-button ${sidebarOpen ? '' : '!grid'}`} aria-label={w.nav.openNav} onClick={() => setSidebarOpen(true)}><Menu size={20} /></button>
-        <div className="p-breadcrumb"><span>{orgNameDisplay}</span><span>/</span><strong>{title}</strong></div>
+        <div className="p-top-brand"><Brand /></div>
+        <div className="p-search-field"><Search size={18}/><input aria-label={w.top.searchAria} placeholder={w.top.search} onFocus={() => setPaletteOpen(true)} onClick={() => setPaletteOpen(true)} readOnly/><kbd>Ctrl K</kbd></div>
         <div className="p-top-right">
           <span className={`p-chain-state ${chainHealth?.ok && chainHealth.configured ? 'is-ready' : 'is-warning'}`} title={chainHealth?.error || w.top.netTitle}><i />{chainText}</span>
           <span className={`p-sync-state ${loading ? 'is-syncing' : failure ? 'is-error' : ''}`}><i />{syncText}</span>
@@ -714,20 +950,15 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
             </button>
             {notifOpen && (
               <div className="ws-pop ws-notif-menu">
-                <div className="ws-pop-body">
+                <div className="ws-pop-body"><strong className="ws-pop-title">{lang === 'id' ? 'Aktivitas terbaru' : 'Recent activity'}</strong>
+                  {auditEvents.slice(0, 5).map(event => <div className="ws-notif-row ws-activity-row" key={event.id}><strong>{w.activity.actions[event.action] || event.action}</strong><small>{displayDate(event.created_at, lang)}</small></div>)}
+                  {!auditEvents.length && <div className="ws-notif-row">{lang === 'id' ? 'Belum ada aktivitas terbaru.' : 'No recent activity.'}</div>}
                   <div className="ws-notif-row"><span className={`p-chain-state ${chainHealth?.ok && chainHealth.configured ? 'is-ready' : 'is-warning'}`}><i />{chainText}</span></div>
                   <div className="ws-notif-row"><span className={`p-sync-state ${loading ? 'is-syncing' : failure ? 'is-error' : ''}`}><i />{syncText}</span></div>
                 </div>
               </div>
             )}
           </div>
-          <div className="p-ws-switch" role="group" aria-label={w.ctl.lang}>
-            <button type="button" className={lang === 'id' ? 'is-on' : ''} aria-pressed={lang === 'id'} onClick={() => setLang('id')}>ID</button>
-            <button type="button" className={lang === 'en' ? 'is-on' : ''} aria-pressed={lang === 'en'} onClick={() => setLang('en')}>EN</button>
-          </div>
-          <button type="button" className="p-ws-theme" onClick={toggleTheme} aria-label={mode === 'dark' ? w.ctl.toLight : w.ctl.toDark} title={mode === 'dark' ? w.ctl.toLight : w.ctl.toDark}>
-            {mode === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
           <div className="ws-prof" data-ws-pop>
             <button type="button" className="ws-prof-trigger" aria-label={w.nav.openProfile} aria-expanded={profileMenu} onClick={() => setProfileMenu(value => !value)}>
               <span className="ws-prof-avatar">{(session.user.user_metadata?.full_name || session.user.email || 'U').slice(0,1).toUpperCase()}</span>
@@ -746,12 +977,15 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
                   <span className="ws-prof-avatar lg">{(session.user.user_metadata?.full_name || session.user.email || 'U').slice(0,1).toUpperCase()}</span>
                   <div>
                     <strong>{session.user.user_metadata?.full_name || session.user.email}</strong>
-                    <small>{session.user.email}</small>
+                    <small>{rows.wallets[0]?.address ? `${rows.wallets[0].address.slice(0, 6)}…${rows.wallets[0].address.slice(-4)}` : session.user.email}</small>
                     <em className="ws-role-chip">{org.role}</em>
                   </div>
                 </div>
                 <div className="ws-pop-body">
                   <a href="/workspace/profile" onClick={() => setProfileMenu(false)} className="ws-pop-item"><UserRound size={15} /> {w.nav.profileLink}</a>
+                  <a href="/workspace/settings" onClick={() => setProfileMenu(false)} className="ws-pop-item"><Settings size={15} /> {w.nav.items.settings}</a>
+                  <button type="button" className="ws-pop-item" onClick={toggleTheme}>{mode === 'dark' ? <Sun size={15}/> : <Moon size={15}/>} {mode === 'dark' ? w.ctl.toLight : w.ctl.toDark}</button>
+                  <div className="ws-pop-item ws-pop-language"><span>{w.ctl.lang}</span><div className="p-ws-switch" role="group" aria-label={w.ctl.lang}><button type="button" className={lang === 'id' ? 'is-on' : ''} aria-pressed={lang === 'id'} onClick={() => setLang('id')}>ID</button><button type="button" className={lang === 'en' ? 'is-on' : ''} aria-pressed={lang === 'en'} onClick={() => setLang('en')}>EN</button></div></div>
                   <button type="button" onClick={signOut} className="ws-pop-item is-danger"><LogOut size={15} /> {w.nav.signOut}</button>
                 </div>
               </motion.div>
@@ -761,12 +995,12 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
         </div>
       </header>
       <main className="p-work-content" key={page}>
-        <div className="p-work-heading"><div><span className="p-kicker">{w.top.kicker}</span><h1>{title}</h1><p>{description}</p></div></div>
+        <div className="p-work-heading"><div><span className="p-kicker">{w.top.kicker}</span><h1>{page === 'overview' ? fill(w.ov.welcome, { name: session.user.user_metadata?.full_name?.split(' ')[0] || w.ov.friend }) : title}</h1><p>{description}</p></div></div>
         {failure && <div className="p-toast p-toast-error" role="alert"><CircleHelp size={16} />{failure}<button onClick={() => setFailure('')}>{w.top.close}</button></div>}
         {notice && <div className="p-toast" role="status"><CheckCircle2 size={16} />{notice}{explorerLink && <a className="p-toast-link" href={explorerLink} target="_blank" rel="noreferrer">{w.top.viewTx} <ArrowUpRight size={14} /></a>}</div>}
         {loading && <div className="p-db-loading"><LoaderCircle className="p-spin" />{w.top.syncing}…</div>}
 
-        {page === 'overview' && <>
+        {page === 'overview' && (loading && rows.batches.length + rows.suppliers.length + rows.profiles.length + rows.proofs.length === 0 ? <div className="p-dashboard-skeleton" role="status" aria-label={w.top.syncing}><div className="p-skeleton-banner"/><div className="p-skeleton-metrics">{[0,1,2,3].map(item => <span key={item}/>)}</div><div className="p-skeleton-panel"/></div> : <>
           <div className="p-welcome">
             <div>
               <span className="p-kicker">{w.ov.kicker}</span>
@@ -789,29 +1023,29 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
           </div>
           <section className="p-work-section">
             <div className="p-section-title"><div><h2>{w.ov.recent}</h2><p>{w.ov.recentSub}</p></div><a href="/workspace/batches">{w.ov.allBatch} <ArrowRight size={15} /></a></div>
-            {matchingBatches.length ? batchTable(matchingBatches.slice(0, 8)) : empty(w.ov.emptyBatch)}
+            {matchingBatches.length ? batchTable(matchingBatches.slice(0, 8)) : empty(w.ov.emptyBatch, '/workspace/batches', w.nav.items.batches)}
           </section>
           <section className="p-work-section p-latest-proof">
             <div className="p-section-title"><div><h2>{w.ov.std}</h2><p>{w.ov.stdSub}</p></div><a href="/workspace/standards">{w.ov.setStd} <ArrowRight size={15} /></a></div>
-            {rows.profiles.length ? rows.profiles.map(profile => <p key={profile.id}><strong>{profile.name}</strong> · {(profile.rules?.measurements || []).map((m: any) => `${m.label} ${m.min}–${m.max} ${m.unit}`).join(', ')}</p>) : empty(w.ov.emptyStd)}
+            {rows.profiles.length ? rows.profiles.map(profile => <p key={profile.id}><strong>{profile.name}</strong> · {(profile.rules?.measurements || []).map((m: any) => `${m.label} ${m.min}–${m.max} ${m.unit}`).join(', ')}</p>) : empty(w.ov.emptyStd, '/workspace/standards', w.nav.items.standards)}
           </section>
-        </>}
+        </>)}
 
         {page === 'products' && <>
           {canManageRecords && <form className="p-db-form p-inline-form" onSubmit={e => void addMaterial(e)}><h2>{w.products.addTitle}</h2><label>{w.products.name}<input required minLength={2} maxLength={160} value={newMaterial} onChange={e => setNewMaterial(e.target.value)} placeholder={w.products.namePh} /></label><button className="p-button p-button-primary" disabled={busy}>{w.products.save}</button></form>}
-          {rows.materials.length ? table([w.tbl.product, w.tbl.category, w.tbl.related], rows.materials.filter(m => m.name.toLowerCase().includes(search.toLowerCase())).map(m => <tr key={m.id}><td><strong>{m.name}</strong></td><td>{m.category || w.products.general}</td><td>{rows.batches.filter(b => b.material_id === m.id).length}</td></tr>)) : <div className="p-db-empty"><PackagePlus size={24}/><strong>{w.products.emptyTitle}</strong><span>{w.products.emptyText}</span></div>}
+          {rows.materials.length ? table([w.tbl.product, w.tbl.category, w.tbl.related], rows.materials.filter(m => m.name.toLowerCase().includes(search.toLowerCase())).map(m => <tr key={m.id}><td><strong>{m.name}</strong></td><td>{displayCategory(m.category || w.products.general)}</td><td>{rows.batches.filter(b => b.material_id === m.id).length}</td></tr>)) : <div className="p-db-empty"><PackagePlus size={24}/><strong>{w.products.emptyTitle}</strong><span>{w.products.emptyText}</span>{canManageRecords && <a className="p-button p-button-outline" href="/workspace/products">{w.empty.action} <ArrowRight size={14}/></a>}</div>}
         </>}
 
         {page === 'standards' && <>
           {canManageSettings && <form className="p-db-form p-inline-form p-standard-form" onSubmit={addProfile}><h2>{w.standards.addTitle}</h2><label>{w.standards.param}<input required value={parameter} onChange={e => setParameter(e.target.value)} placeholder={w.standards.paramPh} /></label><label>{w.standards.min}<input type="number" step="any" required value={minimum} onChange={e => setMinimum(e.target.value)} /></label><label>{w.standards.max}<input type="number" step="any" required value={maximum} onChange={e => setMaximum(e.target.value)} /></label><label>{w.standards.unit}<input required value={unit} onChange={e => setUnit(e.target.value)} placeholder={w.standards.unitPh} /></label><button className="p-button p-button-primary" disabled={busy}>{w.standards.save}</button></form>}
           {!canManageSettings && <p className="p-settings-readonly">{w.standards.readonly}</p>}
-          {rows.profiles.length ? <div className="p-profile-standards">{rows.profiles.map(profile => <article key={profile.id}><SlidersHorizontal size={18}/><div><strong>{profile.name}</strong><span>{(profile.rules?.measurements || []).map((m: any) => `${m.label} ${m.min}–${m.max} ${m.unit}`).join(' | ')}</span></div><Status>{w.standards.active}</Status></article>)}</div> : empty(w.standards.empty)}
+          {rows.profiles.length ? <div className="p-profile-standards">{rows.profiles.map(profile => <article key={profile.id}><SlidersHorizontal size={18}/><div><strong>{profile.name}</strong><span>{(profile.rules?.measurements || []).map((m: any) => `${m.label} ${m.min}–${m.max} ${m.unit}`).join(' | ')}</span></div><Status>{w.standards.active}</Status></article>)}</div> : empty(w.standards.empty, '/workspace/standards', w.nav.items.standards)}
         </>}
 
         {page === 'batches' && <>
           <div className="p-toolbar"><label className="p-table-search"><Search size={16} /><input placeholder={w.batches.search} value={search} onChange={e => setSearch(e.target.value)} /></label></div>
           {canManageRecords && <form className="p-db-form p-inline-form" onSubmit={e => void addBatch(e)}><h2>{w.batches.addTitle}</h2><label>{w.batches.code}<input required minLength={2} maxLength={64} pattern="[A-Za-z0-9][A-Za-z0-9._/-]{1,63}" title={w.batches.codeTitle} value={newCode} onChange={e => setNewCode(e.target.value)} placeholder={w.batches.codePh} /></label><label>{w.batches.product}<ModernSelect required value={newBatchMaterial} onChange={setNewBatchMaterial} placeholder={rows.materials.length ? w.batches.pickProduct : w.batches.noProduct} options={rows.materials.map(m => ({value: m.id, label: m.name}))} /></label><label>{w.batches.supplier}<ModernSelect value={newBatchSupplier} onChange={setNewBatchSupplier} placeholder={w.batches.pickSupplier} options={[{value: '', label: w.batches.pickSupplier}, ...rows.suppliers.map(s => ({value: s.id, label: s.name}))]} /></label><button className="p-button p-button-primary" disabled={busy || !rows.materials.length}>{w.batches.save}</button>{!rows.materials.length && <a className="p-inline-hint" href="/workspace/products">{w.batches.hint} <ArrowRight size={14}/></a>}</form>}
-          {matchingBatches.length ? batchTable(matchingBatches) : empty(w.batches.empty)}
+          {matchingBatches.length ? batchTable(matchingBatches) : empty(w.batches.empty, '/workspace/batches', w.nav.items.batches)}
         </>}
 
         {page === 'inspection' && <>
@@ -838,7 +1072,7 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
 
         {page === 'suppliers' && <>
           {canManageRecords && <form className="p-db-form p-inline-form" onSubmit={e => void addSupplier(e)}><h2>{w.suppliers.addTitle}</h2><label>{w.suppliers.name}<input required minLength={2} value={newSupplier} onChange={e => setNewSupplier(e.target.value)} placeholder={w.suppliers.namePh} /></label><button className="p-button p-button-primary" disabled={busy}>{w.suppliers.save}</button></form>}
-          {rows.suppliers.length ? <div className="p-supplier-grid">{rows.suppliers.filter(s => s.name.toLowerCase().includes(search.toLowerCase())).map(s => <article key={s.id}><span className="p-supplier-avatar"><Factory size={20} /></span><Status>{s.external_ref || w.suppliers.registered}</Status><h3>{s.name}</h3><p>{s.category || s.attributes?.category || org.industry_key}</p><div><span>{fill(w.suppliers.batches, { n: rows.batches.filter(b => b.supplier_id === s.id).length })}</span></div></article>)}</div> : empty(w.suppliers.empty)}
+          {rows.suppliers.length ? <div className="p-supplier-grid">{rows.suppliers.filter(s => s.name.toLowerCase().includes(search.toLowerCase())).map(s => <article key={s.id}><span className="p-supplier-avatar"><Factory size={20} /></span><Status>{s.external_ref || w.suppliers.registered}</Status><h3>{s.name}</h3><p>{displayCategory(s.category || s.attributes?.category || org.industry_key)}</p><div><span>{fill(w.suppliers.batches, { n: rows.batches.filter(b => b.supplier_id === s.id).length })}</span></div></article>)}</div> : empty(w.suppliers.empty, '/workspace/suppliers', w.nav.items.suppliers)}
         </>}
 
         {page === 'proofs' && <>
@@ -847,7 +1081,7 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
             <TiltedCard className="p-proof-stat"><LockKeyhole size={21} /><span><strong>{rows.proofs.length}</strong><small>{w.proofs.total}</small></span></TiltedCard>
             <TiltedCard className="p-proof-stat"><ShieldCheck size={21} /><span><strong>{w.proofs.separated}</strong><small>{w.proofs.separatedNote}</small></span></TiltedCard>
           </div>
-          {rows.proofs.length ? table([w.tbl.proofRef, w.tbl.status, w.tbl.date, w.tbl.qr], rows.proofs.map(p => <tr key={p.id}><td><strong>{p.public_snapshot?.material || 'PANDU'}</strong><small>{p.public_id}</small></td><td><Status tone={p.anchor_status === 'confirmed' ? 'good' : p.anchor_status === 'revoked' || p.anchor_status === 'failed' ? 'review' : 'pending'}>{p.anchor_status}</Status></td><td>{new Date(p.created_at).toLocaleDateString(locale(lang))}</td><td><ProofShareCell proof={p} accessToken={session.access_token} w={w} />{canAnchorProofs && p.anchor_status !== 'confirmed' && p.anchor_status !== 'revoked' && <button className="p-row-link p-anchor-row" disabled={busy} onClick={() => void anchorProof(p.id)}>{w.proofs.anchor}</button>}{p.anchor_status === 'confirmed' && canAnchorProofs && <button className="p-row-link p-revoke-row" disabled={busy} onClick={() => void revokeProof(p)}><XCircle size={13} /> {w.proofs.revoke}</button>}</td></tr>)) : empty(w.proofs.empty)}
+          {rows.proofs.length ? table([w.tbl.proofRef, w.tbl.status, w.tbl.date, w.tbl.qr], rows.proofs.map(p => <tr key={p.id}><td><strong>{p.public_snapshot?.material || 'PANDU'}</strong><small>{p.public_id}</small></td><td><Status tone={p.anchor_status === 'confirmed' ? 'good' : p.anchor_status === 'revoked' || p.anchor_status === 'failed' ? 'review' : 'pending'}>{p.anchor_status}</Status></td><td>{new Date(p.created_at).toLocaleDateString(locale(lang))}</td><td><ProofShareCell proof={p} accessToken={session.access_token} w={w} />{['confirmed', 'revoked'].includes(p.anchor_status) && <button className="p-row-link p-share-row" disabled={busy} onClick={() => setShareProof(p)}><LockKeyhole size={13} /> Akses verifikator</button>}{canAnchorProofs && p.anchor_status !== 'confirmed' && p.anchor_status !== 'revoked' && <button className="p-row-link p-anchor-row" disabled={busy} onClick={() => void anchorProof(p.id)}>{w.proofs.anchor}</button>}{p.anchor_status === 'confirmed' && canAnchorProofs && <button className="p-row-link p-revoke-row" disabled={busy} onClick={() => void revokeProof(p)}><XCircle size={13} /> {w.proofs.revoke}</button>}</td></tr>)) : empty(w.proofs.empty, '/workspace/proofs', w.nav.items.proofs)}
         </>}
 
         {page === 'team' && <>
@@ -869,13 +1103,13 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
               <Status tone={member.status === 'active' ? 'good' : 'pending'}>{member.status === 'active' ? w.team.active : w.team.pending}</Status>
               {member.role === 'owner' ? <strong className="p-team-role">{w.team.owner}</strong> : <ModernSelect className="ms-inline" aria-label={fill(w.team.roleAria, { who: member.email || member.user_id })} value={member.role} disabled={busy} onChange={val => void changeMemberRole(member.user_id, val)} options={[ {value: 'admin', label: 'Admin'}, {value: 'qc', label: 'QC'}, {value: 'qa', label: 'QA'}, {value: 'auditor', label: 'Auditor'} ]} />}
               {member.role !== 'owner' && <button className="p-icon-button p-team-remove" aria-label={fill(w.team.removeAria, { who: member.email || member.user_id })} title={w.team.removeTitle} disabled={busy} onClick={() => void removeMember(member)}><XCircle size={17} /></button>}
-            </article>)}</div> : empty(w.team.empty)}
+            </article>)}</div> : empty(w.team.empty, '/workspace/team', w.nav.items.team)}
           </section>
         </>}
 
         {page === 'activity' && <>
           <section className="p-guide-callout"><div><span className="p-kicker">{w.activity.kicker}</span><h2>{w.activity.title}</h2><p>{w.activity.sub}</p></div><History size={28} aria-hidden="true" /></section>
-          {auditEvents.length ? table([w.tbl.time, w.tbl.action, w.tbl.object, w.tbl.actor], auditEvents.map(event => <tr key={event.id}><td>{new Date(event.created_at).toLocaleString(locale(lang))}</td><td><strong>{w.activity.actions[event.action] || event.action}</strong></td><td>{event.entity_type}{event.entity_id ? <small>{event.entity_id.slice(0,8)}</small> : null}{typeof event.details?.transaction_hash === 'string' && <a className="p-audit-tx" href={`${Number(event.details.chain_id) === 42161 ? 'https://arbiscan.io' : 'https://sepolia.arbiscan.io'}/tx/${event.details.transaction_hash}`} target="_blank" rel="noreferrer">{w.activity.viewTx}</a>}</td><td>{event.actor_id ? event.actor_id.slice(0,8) : w.activity.system}</td></tr>)) : empty(w.activity.empty)}
+          {auditEvents.length ? table([w.tbl.time, w.tbl.action, w.tbl.object, w.tbl.actor], auditEvents.map(event => <tr key={event.id}><td>{new Date(event.created_at).toLocaleString(locale(lang))}</td><td><strong>{w.activity.actions[event.action] || event.action}</strong></td><td>{event.entity_type}{event.entity_id ? <small>{event.entity_id.slice(0,8)}</small> : null}{typeof event.details?.transaction_hash === 'string' && <a className="p-audit-tx" href={`${Number(event.details.chain_id) === 42161 ? 'https://arbiscan.io' : 'https://sepolia.arbiscan.io'}/tx/${event.details.transaction_hash}`} target="_blank" rel="noreferrer">{w.activity.viewTx}</a>}</td><td>{event.actor_id ? event.actor_id.slice(0,8) : w.activity.system}</td></tr>)) : empty(w.activity.empty, '/workspace/activity', w.nav.items.activity)}
         </>}
 
         {page === 'guide' && <>
@@ -891,7 +1125,7 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
             <div className="ws-set-hero-text">
               <span className="p-kicker">{w.settings.kicker}</span>
               <h2>{org.name}</h2>
-              <div className="ws-set-chips"><span className="ws-set-chip"><Factory size={13} />{org.industry_key}</span><span className="ws-role-chip">{org.role}</span></div>
+              <div className="ws-set-chips"><span className="ws-set-chip"><Factory size={13} />{displayCategory(org.industry_key)}</span><span className="ws-role-chip">{org.role}</span></div>
             </div>
           </section>
           <div className="ws-set-grid">
@@ -909,6 +1143,16 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
           </section>
         </div>}
 
+        {shareProof && (
+          <VerifierShareDialog
+            proof={shareProof}
+            accessToken={session.access_token}
+            orgId={org.id}
+            onClose={() => setShareProof(null)}
+          />
+        )}
+
+    {paletteOpen && <div className="p-palette-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setPaletteOpen(false); }}><section className="p-palette" role="dialog" aria-modal="true" aria-label={lang === 'id' ? 'Pencarian PANDU' : 'PANDU search'}><div className="p-palette-input"><Search size={18}/><input autoFocus placeholder={lang === 'id' ? 'Cari halaman atau data' : 'Search pages or data'} value={search} onChange={event => { setSearch(event.target.value); setPaletteIndex(0); }} onKeyDown={event => { if (event.key === 'ArrowDown') { event.preventDefault(); setPaletteIndex(index => Math.min(index + 1, filteredPaletteResults.length - 1)); } else if (event.key === 'ArrowUp') { event.preventDefault(); setPaletteIndex(index => Math.max(index - 1, 0)); } else if (event.key === 'Enter' && filteredPaletteResults[paletteIndex]) window.location.href = filteredPaletteResults[paletteIndex].href; }}/><kbd>ESC</kbd></div><div className="p-palette-results" role="listbox">{filteredPaletteResults.map((item, index) => <a key={item.id} role="option" aria-selected={index === paletteIndex} className={index === paletteIndex ? 'is-selected' : ''} href={item.href}><span>{item.label}</span><small>{item.group}</small></a>)}{!filteredPaletteResults.length && <p>{lang === 'id' ? 'Tidak ada hasil' : 'No results'}</p>}</div></section></div>}
         <footer className="p-work-footer"><span>{w.foot.stored}</span><span>{fill(w.foot.stats, { b: rows.batches.length, s: rows.suppliers.length, p: rows.proofs.length })}</span><a href="/verify">{w.foot.check}</a></footer>
       </main>
     </div>
@@ -922,5 +1166,6 @@ function SetupGate({ w }: { w: Ws }) {
     <p>{w.gate.setupText}</p>
     <ol>{w.gate.setupSteps.map(step => <li key={step}>{step}</li>)}</ol>
     <a href="/login" className="p-button p-button-outline">{w.gate.setupBack}</a>
+
   </div>;
 }

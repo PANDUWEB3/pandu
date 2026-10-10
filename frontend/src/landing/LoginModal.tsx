@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, Check, CircleAlert, X } from 'lucide-react';
 import { useI18n } from '../i18n';
+import { Logo } from './ui';
 import type { WalletProvider } from './auth';
 
 type Stage = 'idle' | 'connecting' | 'error' | 'success';
@@ -38,7 +39,7 @@ export default function LoginModal({ open, onClose, providers, onGoogle, onConne
 
   useEffect(() => {
     if (!open || stage !== 'connecting') return;
-    timer.current = window.setTimeout(() => { setReason('timeout'); setStage('error'); }, 60000);
+    timer.current = window.setTimeout(() => { attempt.current += 1; setReason('timeout'); setStage('error'); }, 60000);
     return () => window.clearTimeout(timer.current);
   }, [open, stage]);
 
@@ -83,6 +84,7 @@ export default function LoginModal({ open, onClose, providers, onGoogle, onConne
       <div className="pand-modal-content" key={stage}>
         {stage === 'idle' && <>
           <button className="pand-modal-close" aria-label={copy.close} onClick={close}><X size={20}/></button>
+          <div className="pand-modal-brand"><Logo variant="icon" size="sm" /></div>
           <h2 id="pand-modal-title">{copy.title}</h2>
           <button className="pand-modal-option pand-modal-google" onClick={() => void connect(null)}><GoogleIcon/><span>{copy.google}</span></button>
           <p className="pand-modal-label">{copy.signer}</p>
@@ -91,7 +93,7 @@ export default function LoginModal({ open, onClose, providers, onGoogle, onConne
         </>}
         {stage === 'connecting' && <>
           <button className="pand-modal-back" aria-label={copy.back} onClick={() => { attempt.current += 1; window.clearTimeout(timer.current); setStage('idle'); }}><ArrowLeft size={19}/></button>
-          <div className="pand-modal-wait"><span className="pand-modal-spinner"><WalletBrand id={provider?.id || 'metamask'} large/></span><h2 id="pand-modal-title">{text(copy.waiting, provider?.label || 'Google')}</h2><p>{copy.help}</p><button disabled className="pand-modal-disabled">{copy.connecting}</button></div>
+          <div className="pand-modal-wait"><span className="pand-modal-spinner">{provider ? <WalletBrand id={provider.id} large/> : <span className="pand-modal-google-large"><GoogleIcon/></span>}</span><h2 id="pand-modal-title">{text(copy.waiting, provider?.label || 'Google')}</h2><p>{copy.help}</p><button disabled className="pand-modal-disabled">{copy.connecting}</button></div>
         </>}
         {stage === 'error' && <>
           <button className="pand-modal-back" aria-label={copy.back} onClick={() => { attempt.current += 1; setStage('idle'); }}><ArrowLeft size={19}/></button>

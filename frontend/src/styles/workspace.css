@@ -1529,3 +1529,16 @@ html[data-theme='light'] .p-workspace .p-rail-submenu { background:#fffaf6;color
 .p-workspace .ws-org{margin:0}
 .p-workspace .p-top-brand>a,.p-workspace .p-top-brand>a span{text-decoration:none!important}
 @media(max-width:767px){.p-workspace .p-sidebar{top:auto;bottom:8px;height:62px;max-height:62px;transform:none}.p-workspace .p-nav-scroll{flex:1;justify-content:space-around;gap:0}}
+
+/* Floating, content-sized glass dashboard navbar. */
+@media(min-width:768px){
+ .p-workspace .p-work-top{position:sticky;top:12px;width:max-content;max-width:calc(100% - 32px);margin:12px auto 0;padding:0 16px;gap:14px;border:1px solid var(--p-line);border-radius:999px;background:var(--p-glass);backdrop-filter:blur(20px) saturate(150%);-webkit-backdrop-filter:blur(20px) saturate(150%);box-shadow:0 14px 40px -28px rgba(0,0,0,.72)}
+ .p-workspace .p-search-field{width:clamp(220px,32vw,440px);flex:0 1 440px}
+ .p-workspace .p-top-right{gap:8px}
+}
+@media(max-width:767px){.p-workspace .p-work-top{width:auto;max-width:none;margin:6px 8px 0;border-radius:18px}}
+
+/* Organization names stay visible inside the flyout even while rail labels are hidden. */
+.p-workspace .ws-org-menu .ws-org-meta{display:flex!important;flex:1;min-width:0;flex-direction:column;gap:3px}
+.p-workspace .ws-org-menu .ws-org-meta strong{display:block!important;color:var(--p-ink);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.p-workspace .ws-org-menu .ws-org-meta small{display:flex!important;align-items:center;gap:6px;color:var(--p-muted);font-size:11px}

@@ -108,3 +108,8 @@ html[data-theme='dark'] .pand-modal-card{background:#171b20;border-color:#353b43
 /* Keep the wallet mark still; animate only its orange progress ring. */
 .pand-modal-spinner{position:relative;border:0;animation:none}.pand-modal-spinner::before{content:'';position:absolute;inset:0;border:3px solid #ffeadc;border-top-color:#f97316;border-radius:50%;animation:pand-spin .9s linear infinite}.pand-modal-spinner .pand-wallet-icon{position:relative;z-index:1;animation:none;transform:none}html[data-theme='dark'] .pand-modal-spinner::before{border-color:#543a2a;border-top-color:#fb923c}@media(prefers-reduced-motion:reduce){.pand-modal-spinner::before{animation:none;border-top-color:#f97316}html[data-theme='dark'] .pand-modal-spinner::before{border-top-color:#fb923c}}
 .pand-wallet-icon{object-fit:contain}
+
+/* Modal content follows its state height; avoid blank space below the privacy note. */
+.pand-modal-content{min-height:0;word-spacing:normal}.pand-modal-content h2{word-spacing:.08em;letter-spacing:-.025em}.pand-modal-google-large{width:56px;height:56px;display:grid;place-items:center;border-radius:50%;background:white}.pand-modal-google-large svg{width:36px;height:36px}
+
+.pand-modal-brand{margin:0 0 14px}.pand-modal-brand>a{gap:0}

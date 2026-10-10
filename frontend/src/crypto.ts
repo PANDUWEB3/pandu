@@ -216,7 +216,7 @@ export async function deriveKeyFromPasskey(saltString = 'PANDU'): Promise<Crypto
     {
       name: 'PBKDF2',
       salt: new TextEncoder().encode('PANDU-QUALITY-REGISTRY-KEY-SALT'),
-      iterations: 100000,
+      iterations: RECOVERY_KDF_ITERATIONS,
       hash: 'SHA-256',
     },
     keyMaterial,
@@ -226,14 +226,325 @@ export async function deriveKeyFromPasskey(saltString = 'PANDU'): Promise<Crypto
   );
 }
 
+/** KDF untuk KEK recovery. Argon2id direkomendasikan, PBKDF2-SHA256 minimal 600.000 iterasi. */
+export const RECOVERY_KDF_ALGORITHM = 'PBKDF2-SHA256' as const;
+export const RECOVERY_KDF_ITERATIONS = 600_000;
+export const MIN_RECOVERY_PASSPHRASE_LENGTH = 12;
+
 /**
- * Enkripsi berkas menggunakan AES-GCM 256-bit di sisi klien
- * Mengembalikan:
- * - payload: [12-byte IV] + [Ciphertext]
- * - ciphertextSha256: Hash dari payload terenkripsi (untuk pelacakan Pinata)
- * - plaintextSha256: Hash dari berkas asli
- * - fileHmac: HMAC-SHA256 dari berkas asli dengan salt per-file
- * - fileSalt: Salt unik per-file (32-byte hex)
+ * Validasi panjang & entropi frasa sandi pemulihan saat pembuatan envelope.
+ * Berlaku saat MENCIPTAKAN bungkus (wrap); saat unwrap, iterasi tersimpan di metadata.
+ */
+export function validateRecoveryPassphrase(passphrase: string): string {
+  const value = String(passphrase ?? '');
+  if (value.length < MIN_RECOVERY_PASSPHRASE_LENGTH) {
+    throw new Error(
+      `Frasa sandi pemulihan minimal ${MIN_RECOVERY_PASSPHRASE_LENGTH} karakter (diterima: ${value.length}).`
+    );
+  }
+  if (!/[A-Za-z]/.test(value) || !/[0-9]/.test(value)) {
+    throw new Error('Frasa sandi pemulihan harus memuat huruf dan angka.');
+  }
+  if (/^(.)\1+$/.test(value)) {
+    throw new Error('Frasa sandi pemulihan tidak boleh hanya satu karakter berulang.');
+  }
+  return value;
+}
+
+export interface WrappedKeyEntry {
+  iv: string; // 12-byte hex
+  ciphertext: string; // hex
+}
+
+export interface RecoveryWrappedKeyEntry extends WrappedKeyEntry {
+  salt: string; // hex salt untuk KDF
+  iterations: number; // 600000 (PBKDF2-SHA256)
+  kdf?: typeof RECOVERY_KDF_ALGORITHM | 'Argon2id'; // algoritma KDF eksplisit (v1 lama tanpa field ini = PBKDF2-SHA256)
+}
+
+export interface WrappedKeyMetadata {
+  version: 1;
+  wrappedBy: {
+    wallet?: WrappedKeyEntry & { account?: string };
+    passkey?: WrappedKeyEntry;
+    recovery: RecoveryWrappedKeyEntry;
+  };
+}
+
+/** Hasilkan DEK acak 256-bit (32 byte) */
+export function generateDek(): Uint8Array {
+  return crypto.getRandomValues(new Uint8Array(32));
+}
+
+/** Import DEK mentah (32 byte) menjadi CryptoKey AES-GCM */
+export async function importDek(rawDek: Uint8Array): Promise<CryptoKey> {
+  return await crypto.subtle.importKey(
+    'raw',
+    rawDek,
+    { name: 'AES-GCM', length: 256 },
+    true,
+    ['encrypt', 'decrypt']
+  );
+}
+
+/** Exportable DEK -> raw bytes; only used when issuer deliberately creates a verifier share. */
+export async function exportDekRaw(dek: CryptoKey): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.exportKey('raw', dek));
+}
+
+/**
+ * Turunkan KEK mentah (32 byte) dari passphrase pemulihan dan salt acak
+ * menggunakan PBKDF2-SHA256. Default 600.000 iterasi (ambang minimum PANDU).
+ * Metadata (salt + iterasi) disimpan di RecoveryWrappedKeyEntry.
+ */
+export async function deriveRawKekFromPassphrase(
+  passphrase: string,
+  saltHex: string,
+  iterations = RECOVERY_KDF_ITERATIONS
+): Promise<Uint8Array> {
+  const saltBytes = hexToBytes(saltHex);
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(passphrase),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: saltBytes, iterations, hash: 'SHA-256' },
+    keyMaterial,
+    256
+  );
+  return new Uint8Array(bits);
+}
+
+/** Turunkan KEK AES-GCM-256 dari passphrase pemulihan. */
+export async function deriveKeyFromPassphrase(
+  passphrase: string,
+  saltHex: string,
+  iterations = RECOVERY_KDF_ITERATIONS
+): Promise<CryptoKey> {
+  const rawKek = await deriveRawKekFromPassphrase(passphrase, saltHex, iterations);
+  return await crypto.subtle.importKey(
+    'raw',
+    rawKek,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+/** KEK recovery production path: enforce strong passphrase and PBKDF2 floor. */
+export async function deriveRecoveryKeyFromPassphrase(
+  passphrase: string,
+  saltHex: string,
+  iterations = RECOVERY_KDF_ITERATIONS
+): Promise<CryptoKey> {
+  const value = validateRecoveryPassphrase(passphrase);
+  if (!Number.isInteger(iterations) || iterations < RECOVERY_KDF_ITERATIONS) {
+    throw new Error(`PBKDF2 recovery minimal ${RECOVERY_KDF_ITERATIONS} iterasi.`);
+  }
+  return deriveKeyFromPassphrase(value, saltHex, iterations);
+}
+
+/**
+ * Bungkus (wrap) DEK menggunakan KEK via AES-GCM 256-bit
+ */
+export async function wrapDek(
+  rawDek: Uint8Array,
+  kek: CryptoKey
+): Promise<WrappedKeyEntry> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kek, rawDek);
+  return {
+    iv: bytesToHex(iv),
+    ciphertext: bytesToHex(new Uint8Array(encrypted)),
+  };
+}
+
+/**
+ * Buka bungkus (unwrap) DEK menggunakan KEK via AES-GCM 256-bit
+ */
+export async function unwrapDek(
+  wrapped: WrappedKeyEntry,
+  kek: CryptoKey
+): Promise<CryptoKey> {
+  const iv = hexToBytes(wrapped.iv);
+  const ciphertext = hexToBytes(wrapped.ciphertext);
+  const decrypted = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv },
+    kek,
+    ciphertext
+  );
+  return await importDek(new Uint8Array(decrypted));
+}
+
+/**
+ * Alur Pemulihan Nyata: Buka bungkus DEK menggunakan frasa sandi (passphrase recovery)
+ */
+export async function recoverDekWithPassphrase(
+  wrappedMeta: WrappedKeyMetadata,
+  passphrase: string
+): Promise<CryptoKey> {
+  const rec = wrappedMeta?.wrappedBy?.recovery;
+  if (!rec) throw new Error('Metadata pembungkus recovery tidak ditemukan.');
+  const iterations = rec.iterations || RECOVERY_KDF_ITERATIONS;
+  // Permit opening explicitly legacy envelopes (no `kdf` marker) so users can
+  // migrate existing proofs; all newly wrapped recovery keys enforce the floor.
+  const kekRecovery = !rec.kdf && iterations < RECOVERY_KDF_ITERATIONS
+    ? await deriveKeyFromPassphrase(validateRecoveryPassphrase(passphrase), rec.salt, iterations)
+    : await deriveRecoveryKeyFromPassphrase(passphrase, rec.salt, iterations);
+  return await unwrapDek({ iv: rec.iv, ciphertext: rec.ciphertext }, kekRecovery);
+}
+
+/**
+ * Alur Pemulihan Nyata: Buka bungkus DEK menggunakan KEK wallet
+ */
+export async function recoverDekWithWallet(
+  wrappedMeta: WrappedKeyMetadata,
+  kekWallet: CryptoKey
+): Promise<CryptoKey> {
+  const w = wrappedMeta?.wrappedBy?.wallet;
+  if (!w) throw new Error('Metadata pembungkus wallet tidak ditemukan.');
+  return await unwrapDek({ iv: w.iv, ciphertext: w.ciphertext }, kekWallet);
+}
+
+/**
+ * Alur Pemulihan Nyata: Buka bungkus DEK menggunakan KEK passkey
+ */
+export async function recoverDekWithPasskey(
+  wrappedMeta: WrappedKeyMetadata,
+  kekPasskey: CryptoKey
+): Promise<CryptoKey> {
+  const p = wrappedMeta?.wrappedBy?.passkey;
+  if (!p) throw new Error('Metadata pembungkus passkey tidak ditemukan.');
+  return await unwrapDek({ iv: p.iv, ciphertext: p.ciphertext }, kekPasskey);
+}
+
+/**
+ * Enkripsi nama berkas (original_name) di sisi klien dengan AES-GCM
+ */
+export async function encryptFileName(fileName: string, key: CryptoKey): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoded = new TextEncoder().encode(fileName);
+  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded);
+  return `enc:v1:${bytesToHex(iv)}:${bytesToHex(new Uint8Array(encrypted))}`;
+}
+
+/**
+ * Dekripsi nama berkas (original_name) terenkripsi di sisi klien
+ */
+export async function decryptFileName(encryptedName: string, key: CryptoKey): Promise<string> {
+  if (!encryptedName.startsWith('enc:v1:')) return encryptedName;
+  const parts = encryptedName.split(':');
+  if (parts.length < 4) throw new Error('Format nama file terenkripsi tidak valid.');
+  const iv = hexToBytes(parts[2]);
+  const ciphertext = hexToBytes(parts[3]);
+  const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+  return new TextDecoder().decode(decrypted);
+}
+
+/**
+ * Enkripsi berkas menggunakan pola Envelope Encryption sisi klien:
+ * - DEK acak 256-bit per berkas
+ * - Konten berkas dienkripsi dengan DEK via AES-GCM
+ * - DEK dibungkus oleh KEK Wallet (HKDF), KEK Passkey (opsional), dan KEK Recovery Passphrase (PBKDF2)
+ * - HMAC-SHA256 dihitung menggunakan salt per-file (plaintextSha256 TIDAK pernah dikirim/disimpan)
+ */
+export async function encryptFileEnvelope(
+  fileBytes: ArrayBuffer | Uint8Array,
+  options: {
+    kekWallet?: CryptoKey;
+    walletAccount?: string;
+    kekPasskey?: CryptoKey;
+    recoveryPassphrase: string;
+    providedSalt?: string;
+  }
+): Promise<{
+  payload: Uint8Array;
+  ciphertextSha256: string;
+  fileHmac: string;
+  fileSalt: string;
+  wrappedKeyMeta: WrappedKeyMetadata;
+  dek: CryptoKey;
+}> {
+  const rawDek = generateDek();
+  const dek = await importDek(rawDek);
+
+  // 1. Enkripsi konten berkas dengan DEK
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const dataBuf =
+    fileBytes instanceof Uint8Array
+      ? (fileBytes.buffer.slice(fileBytes.byteOffset, fileBytes.byteOffset + fileBytes.byteLength) as ArrayBuffer)
+      : fileBytes;
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, dek, dataBuf);
+
+  const payload = new Uint8Array(iv.length + ciphertext.byteLength);
+  payload.set(iv);
+  payload.set(new Uint8Array(ciphertext), iv.length);
+
+  const ciphertextSha256 = await sha256Hex(payload);
+
+  // 2. Hitung HMAC berkas dengan salt per-file
+  const saltBytes = options.providedSalt
+    ? hexToBytes(options.providedSalt)
+    : crypto.getRandomValues(new Uint8Array(32));
+  const fileSalt = bytesToHex(saltBytes);
+  const fileHmac = await computeFileHmacSha256(fileBytes, saltBytes);
+
+  // 3. Bungkus DEK dengan KEK recovery (PBKDF2-SHA256, validasi panjang passphrase)
+  const recoveryPassphrase = validateRecoveryPassphrase(options.recoveryPassphrase);
+  const recoverySalt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
+  const iterations = RECOVERY_KDF_ITERATIONS;
+  const kekRecovery = await deriveRecoveryKeyFromPassphrase(recoveryPassphrase, recoverySalt, iterations);
+  const wrappedRecovery = await wrapDek(rawDek, kekRecovery);
+
+  const wrappedBy: WrappedKeyMetadata['wrappedBy'] = {
+    recovery: {
+      ...wrappedRecovery,
+      salt: recoverySalt,
+      iterations,
+      kdf: RECOVERY_KDF_ALGORITHM,
+    },
+  };
+
+  // 4. Bungkus DEK dengan KEK Wallet jika tersedia
+  if (options.kekWallet) {
+    const wrappedWallet = await wrapDek(rawDek, options.kekWallet);
+    wrappedBy.wallet = {
+      ...wrappedWallet,
+      account: options.walletAccount,
+    };
+  }
+
+  // 5. Bungkus DEK dengan KEK Passkey jika tersedia
+  if (options.kekPasskey) {
+    const wrappedPasskey = await wrapDek(rawDek, options.kekPasskey);
+    wrappedBy.passkey = wrappedPasskey;
+  }
+
+  const wrappedKeyMeta: WrappedKeyMetadata = {
+    version: 1,
+    wrappedBy,
+  };
+
+  return { payload, ciphertextSha256, fileHmac, fileSalt, wrappedKeyMeta, dek };
+}
+
+/**
+ * Dekripsi berkas menggunakan alur recovery nyata (passphrase)
+ */
+export async function decryptFileWithRecovery(
+  payload: Uint8Array,
+  wrappedMeta: WrappedKeyMetadata,
+  passphrase: string
+): Promise<{ decryptedBytes: ArrayBuffer; decryptedSha256: string }> {
+  const dek = await recoverDekWithPassphrase(wrappedMeta, passphrase);
+  return await decryptFileClient(payload, dek);
+}
+
+/**
+ * Enkripsi berkas menggunakan AES-GCM 256-bit di sisi klien (legacy wrapper)
  */
 export async function encryptFileClient(
   file: File,
@@ -242,13 +553,11 @@ export async function encryptFileClient(
 ): Promise<{
   payload: Uint8Array;
   ciphertextSha256: string;
-  plaintextSha256: string;
   fileHmac: string;
   fileSalt: string;
 }> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const fileBytes = await file.arrayBuffer();
-  const plaintextSha256 = await sha256Hex(fileBytes);
 
   const saltBytes = providedSalt
     ? hexToBytes(providedSalt)
@@ -264,7 +573,7 @@ export async function encryptFileClient(
 
   const ciphertextSha256 = await sha256Hex(payload);
 
-  return { payload, ciphertextSha256, plaintextSha256, fileHmac, fileSalt };
+  return { payload, ciphertextSha256, fileHmac, fileSalt };
 }
 
 /**

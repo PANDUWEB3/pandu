@@ -3,7 +3,7 @@
 export type Lang = 'id' | 'en';
 
 const id = {
-  nav: { how: 'Cara kerja', who: 'Untuk siapa', verify: 'Verifikasi Bukti', login: 'Masuk', start: 'Mulai Sekarang', menuOpen: 'Buka menu', menuClose: 'Tutup menu', home: 'Beranda PANDU' },
+  nav: { homeLabel: 'Beranda', how: 'Cara kerja', who: 'Untuk siapa', verify: 'Verifikasi Bukti', login: 'Masuk', start: 'Mulai Sekarang', menuOpen: 'Buka menu', menuClose: 'Tutup menu', home: 'Beranda PANDU' },
   ctl: { theme: 'Tema', toLight: 'Beralih ke mode terang', toDark: 'Beralih ke mode gelap', lang: 'Bahasa' },
   hero: {
     badge: 'Verifikasi bukti digital untuk ekspor-impor',
@@ -67,6 +67,7 @@ const id = {
     legendTitle: 'Arti hasil pemeriksaan',
     legend: [
       { k: 'good', title: 'Terverifikasi', text: 'Ringkasan cocok dengan catatan blockchain.' },
+      { k: 'legacy', title: 'Legacy, tanpa tanda tangan penerbit', text: 'Catatan v1 masih dapat ditelusuri, tetapi anchor tidak memeriksa tanda tangan penerbit.' },
       { k: 'pending', title: 'Menunggu pencatatan', text: 'Bukti sudah dibuat, pencatatan masih berjalan.' },
       { k: 'bad', title: 'Tidak cocok', text: 'Data berubah setelah dicatat. Minta penjelasan pemasok.' },
       { k: 'bad', title: 'Dicabut', text: 'Penerbit menarik bukti ini dan tidak berlaku lagi.' },
@@ -76,7 +77,7 @@ const id = {
   },
   proof: {
     kicker: 'Hasil verifikasi', title: 'Hasil pemeriksaan bukti', loading: 'Memeriksa ringkasan dengan catatan jaringan…',
-    status: { VERIFIED: 'Bukti terverifikasi', REVOKED: 'Bukti telah dicabut', MISMATCH: 'Data tidak cocok', PENDING: 'Menunggu pencatatan', NOT_FOUND: 'Bukti tidak ditemukan', UNAVAILABLE: 'Belum dapat diperiksa' } as Record<string, string>,
+    status: { VERIFIED: 'Bukti terverifikasi', REVOKED: 'Bukti telah dicabut', MISMATCH: 'Data tidak cocok', LEGACY_UNSIGNED: 'Legacy, tanpa tanda tangan penerbit', LEGACY_REVOKED: 'Legacy dicabut, tanpa tanda tangan penerbit', LEGACY_MISMATCH: 'Legacy, data tidak cocok; tanda tangan tidak diperiksa', PENDING: 'Menunggu pencatatan', NOT_FOUND: 'Bukti tidak ditemukan', UNAVAILABLE: 'Belum dapat diperiksa' } as Record<string, string>,
     facts: { material: 'Produk / material', batch: 'Nomor batch', supplier: 'Pemasok', inspection: 'Hasil inspeksi', approvedAt: 'Disetujui pada', network: 'Jaringan' },
     timeline: 'Jejak bukti', tl: ['Inspeksi dicatat', 'Disetujui tim QA', 'Dicatat di blockchain'], tlDone: 'Selesai', tlWait: 'Menunggu',
     pass: 'Lulus', fail: 'Tidak lulus',
@@ -89,6 +90,10 @@ const id = {
     ctl: { toLight: 'Beralih ke mode terang', toDark: 'Beralih ke mode gelap', light: 'Terang', dark: 'Gelap', lang: 'Bahasa', theme: 'Tema' },
     gate: {
       checking: 'Memeriksa sesi…',
+      bootstrapTimeout: 'Pemuatan sesi atau organisasi terlalu lama. Periksa koneksi lalu coba lagi.',
+      bootstrapErrorTitle: 'Workspace belum dapat dimuat',
+      workspaceSlow: 'Pemuatan ruang kerja lebih lama dari biasanya. Periksa koneksi lalu coba lagi.',
+      workspaceRetry: 'Muat ulang ruang kerja',
       signInTitle: 'Masuk untuk membuka ruang kerja',
       signInText: 'Gunakan akun Google organisasi. Halaman ini tidak memakai data contoh.',
       signInCta: 'Masuk dengan Google',
@@ -109,7 +114,10 @@ const id = {
       onbText: 'Data setiap organisasi terpisah. Anda dapat mengundang anggota setelah setup.',
       onbName: 'Nama organisasi',
       onbNamePh: 'Contoh: PT PANDU Nusantara',
+      onbNameHint: 'Nama ini akan digunakan sebagai identitas workspace tim Anda.',
       onbIndustry: 'Industri',
+      onbIndustryHint: 'Pilih sektor yang paling sesuai dengan kegiatan organisasi.',
+      onbPrivacy: 'Data organisasi disimpan terpisah dari workspace lain.',
       onbSaving: 'Menyimpan…',
       onbSubmit: 'Buat organisasi',
       industry: { general: 'Umum / lainnya', agriculture: 'Pertanian & komoditas', manufacturing: 'Manufaktur', food: 'Pangan', construction: 'Material konstruksi' },
@@ -118,13 +126,14 @@ const id = {
       activeOrg: 'organisasi aktif',
       gOverview: 'RINGKASAN', gData: 'DATA PRODUK', gQuality: 'PEMERIKSAAN', gProof: 'BUKTI & AUDIT', gOrg: 'ORGANISASI', gAccount: 'BANTUAN & AKUN',
       items: { overview: 'Ringkasan', products: 'Produk', standards: 'Standar pemeriksaan', batches: 'Batch produk', inspection: 'Pemeriksaan', suppliers: 'Pemasok', proofs: 'Bukti PANDU', team: 'Anggota tim', activity: 'Aktivitas', guide: 'Panduan fitur', settings: 'Pengaturan', profile: 'Profil saya' },
-      verify: 'Verifikasi publik', verifyHint: 'Cek bukti tanpa login',
+      homeLabel: 'Beranda', verify: 'Verifikasi publik', verifyHint: 'Cek bukti tanpa login',
       signOut: 'Keluar dari PANDU',
       openNav: 'Buka navigasi', closeNav: 'Tutup navigasi',
       openProfile: 'Buka menu profil', profileLink: 'Profil & wallet',
     },
     top: {
       kicker: 'RUANG KERJA',
+      search: 'Cari', searchAria: 'Cari halaman dan data',
       syncing: 'Menyinkronkan', check: 'Perlu diperiksa', synced: 'Tersinkron',
       netDown: 'Jaringan tidak tersedia', netTitle: 'Status jaringan blockchain',
       noContract: 'kontrak belum diatur', txLive: 'transaksi aktif', readOnly: 'baca saja', linked: 'tersambung',
@@ -159,8 +168,8 @@ const id = {
       stdSaved: 'Profil pemeriksaan tersimpan.',
       nameInvalid: 'Nama profil harus terdiri dari 2 sampai 100 karakter.',
       profileSaved: 'Profil berhasil disimpan.',
-      supplierSaved: 'Pemasok tersimpan di Supabase.',
-      materialSaved: 'Produk/material tersimpan di Supabase.',
+      supplierSaved: 'Pemasok berhasil disimpan.',
+      materialSaved: 'Produk berhasil disimpan.',
       batchCodeInvalid: 'Kode batch harus 2–64 karakter: huruf, angka, titik, garis miring, atau tanda hubung.',
       batchMaterialInvalid: 'Pilih produk yang sudah terdaftar sebelum menyimpan batch.',
       batchSaved: 'Batch tersimpan dan tersinkron dengan produk organisasi.',
@@ -196,7 +205,7 @@ const id = {
       walletDisconnected: 'Wallet berhasil diputuskan dari profil.',
     },
     proofCell: { pending: 'QR muncul setelah bukti tercatat', noLink: 'Tautan tidak tersedia', making: 'Membuat QR…', check: 'Periksa bukti' },
-    empty: { title: 'Belum ada data' },
+    empty: { title: 'Belum ada data', action: 'Tambahkan produk' },
     tbl: {
       batchCode: 'KODE BATCH / PRODUK', supplier: 'PEMASOK', status: 'STATUS', created: 'DIBUAT', inspection: 'INSPEKSI',
       product: 'PRODUK / MATERIAL', category: 'KATEGORI', related: 'BATCH TERKAIT',
@@ -207,8 +216,8 @@ const id = {
       pickProductAria: 'Pilih produk untuk batch {code}',
     },
     ov: {
-      kicker: 'RUANG KERJA ORGANISASI', friend: 'teman',
-      sub: 'Berikut status pemeriksaan dan bukti yang tersimpan di Supabase.',
+      kicker: 'RUANG KERJA ORGANISASI', friend: 'teman', welcome: 'Selamat datang, {name}',
+      sub: 'Pantau status inspeksi, persetujuan QA, dan bukti organisasi Anda.',
       seeBatch: 'Lihat batch', tagTop: 'Data organisasi', tagBottom: 'Sinkron otomatis',
       guideTitle: 'Kenali fitur PANDU', guideText: 'Panduan singkat alur QC, QA, dokumen privat, dan verifikasi publik.',
       m1: 'Total batch', m1s: 'Data organisasi ini', m2: 'Menunggu QA', m2s: 'Perlu ditinjau',
@@ -311,14 +320,14 @@ const id = {
       noneTitle: 'Belum ada wallet terhubung', noneText: 'Hubungkan MetaMask secara opsional. Proses ini meminta tanda tangan tanpa biaya gas.',
       waiting: 'Menunggu…', connect: 'Hubungkan wallet',
     },
-    foot: { stored: 'Data organisasi tersimpan di Supabase', stats: '{b} batch · {s} pemasok · {p} bukti', check: 'Cek bukti publik' },
+    foot: { stored: 'Ruang kerja organisasi', stats: '{b} batch · {s} pemasok · {p} bukti', check: 'Cek bukti publik' },
   },
 };
 
 export type Dict = typeof id;
 
 const en: Dict = {
-  nav: { how: 'How it works', who: "Who it's for", verify: 'Verify Proof', login: 'Login', start: 'Get Started', menuOpen: 'Open menu', menuClose: 'Close menu', home: 'PANDU home' },
+  nav: { homeLabel: 'Home', how: 'How it works', who: "Who it's for", verify: 'Verify Proof', login: 'Login', start: 'Get Started', menuOpen: 'Open menu', menuClose: 'Close menu', home: 'PANDU home' },
   ctl: { theme: 'Theme', toLight: 'Switch to light mode', toDark: 'Switch to dark mode', lang: 'Language' },
   hero: {
     badge: 'Digital proof verification for export-import',
@@ -382,6 +391,7 @@ const en: Dict = {
     legendTitle: 'What the results mean',
     legend: [
       { k: 'good', title: 'Verified', text: 'The summary matches the blockchain record.' },
+      { k: 'legacy', title: 'Legacy, unsigned by issuer', text: 'The v1 record remains traceable, but its anchor did not check an issuer signature.' },
       { k: 'pending', title: 'Pending', text: 'The proof exists, recording is still in progress.' },
       { k: 'bad', title: 'Mismatch', text: 'Data changed after it was recorded. Ask your supplier.' },
       { k: 'bad', title: 'Revoked', text: 'The issuer withdrew this proof and it is no longer valid.' },
@@ -391,7 +401,7 @@ const en: Dict = {
   },
   proof: {
     kicker: 'Verification result', title: 'Proof check result', loading: 'Matching the summary with the network record…',
-    status: { VERIFIED: 'Proof verified', REVOKED: 'Proof has been revoked', MISMATCH: 'Data does not match', PENDING: 'Waiting to be recorded', NOT_FOUND: 'Proof not found', UNAVAILABLE: 'Cannot be checked yet' } as Record<string, string>,
+    status: { VERIFIED: 'Proof verified', REVOKED: 'Proof has been revoked', MISMATCH: 'Data does not match', LEGACY_UNSIGNED: 'Legacy, unsigned by issuer', LEGACY_REVOKED: 'Legacy revoked, unsigned by issuer', LEGACY_MISMATCH: 'Legacy mismatch; signature was not checked', PENDING: 'Waiting to be recorded', NOT_FOUND: 'Proof not found', UNAVAILABLE: 'Cannot be checked yet' } as Record<string, string>,
     facts: { material: 'Product / material', batch: 'Batch number', supplier: 'Supplier', inspection: 'Inspection result', approvedAt: 'Approved on', network: 'Network' },
     timeline: 'Proof trail', tl: ['Inspection recorded', 'Approved by QA', 'Recorded on blockchain'], tlDone: 'Done', tlWait: 'Waiting',
     pass: 'Pass', fail: 'Fail',
@@ -404,6 +414,10 @@ const en: Dict = {
     ctl: { toLight: 'Switch to light mode', toDark: 'Switch to dark mode', light: 'Light', dark: 'Dark', lang: 'Language', theme: 'Theme' },
     gate: {
       checking: 'Checking session…',
+      bootstrapTimeout: 'Loading your session or organisation took too long. Check your connection and try again.',
+      bootstrapErrorTitle: 'The workspace could not be loaded',
+      workspaceSlow: 'The workspace is taking longer than usual to load. Check your connection and try again.',
+      workspaceRetry: 'Reload workspace',
       signInTitle: 'Sign in to open the workspace',
       signInText: 'Use your organisation Google account. This page does not use sample data.',
       signInCta: 'Sign in with Google',
@@ -424,7 +438,10 @@ const en: Dict = {
       onbText: 'Each organisation keeps its own data. You can invite members after setup.',
       onbName: 'Organisation name',
       onbNamePh: 'Example: PT PANDU Nusantara',
+      onbNameHint: 'This name will identify your team workspace.',
       onbIndustry: 'Industry',
+      onbIndustryHint: 'Choose the sector that best matches your organisation.',
+      onbPrivacy: 'Organisation data stays separate from other workspaces.',
       onbSaving: 'Saving…',
       onbSubmit: 'Create organisation',
       industry: { general: 'General / other', agriculture: 'Agriculture & commodities', manufacturing: 'Manufacturing', food: 'Food', construction: 'Construction materials' },
@@ -433,13 +450,14 @@ const en: Dict = {
       activeOrg: 'active organisation',
       gOverview: 'OVERVIEW', gData: 'PRODUCT DATA', gQuality: 'INSPECTION', gProof: 'PROOF & AUDIT', gOrg: 'ORGANISATION', gAccount: 'HELP & ACCOUNT',
       items: { overview: 'Overview', products: 'Products', standards: 'Inspection standards', batches: 'Product batches', inspection: 'Inspections', suppliers: 'Suppliers', proofs: 'PANDU Proofs', team: 'Team members', activity: 'Activity', guide: 'Feature guide', settings: 'Settings', profile: 'My profile' },
-      verify: 'Public verification', verifyHint: 'Check a proof without login',
+      homeLabel: 'Home', verify: 'Public verification', verifyHint: 'Check a proof without login',
       signOut: 'Sign out of PANDU',
       openNav: 'Open navigation', closeNav: 'Close navigation',
       openProfile: 'Open profile menu', profileLink: 'Profile & wallet',
     },
     top: {
       kicker: 'WORKSPACE',
+      search: 'Search', searchAria: 'Search pages and data',
       syncing: 'Syncing', check: 'Needs review', synced: 'Synced',
       netDown: 'Network unavailable', netTitle: 'Blockchain network status',
       noContract: 'contract not configured', txLive: 'writes active', readOnly: 'read only', linked: 'connected',
@@ -474,8 +492,8 @@ const en: Dict = {
       stdSaved: 'Inspection profile saved.',
       nameInvalid: 'The profile name must be between 2 and 100 characters.',
       profileSaved: 'Profile saved.',
-      supplierSaved: 'Supplier saved to Supabase.',
-      materialSaved: 'Product/material saved to Supabase.',
+      supplierSaved: 'Supplier saved.',
+      materialSaved: 'Product saved.',
       batchCodeInvalid: 'Batch code must be 2–64 characters: letters, numbers, dots, slashes or hyphens.',
       batchMaterialInvalid: 'Choose an existing product before saving the batch.',
       batchSaved: 'Batch saved and synced with your organisation products.',
@@ -511,7 +529,7 @@ const en: Dict = {
       walletDisconnected: 'Wallet disconnected from your profile.',
     },
     proofCell: { pending: 'QR appears once the proof is recorded', noLink: 'Link not available', making: 'Creating QR…', check: 'Check proof' },
-    empty: { title: 'No data yet' },
+    empty: { title: 'No data yet', action: 'Add a product' },
     tbl: {
       batchCode: 'BATCH CODE / PRODUCT', supplier: 'SUPPLIER', status: 'STATUS', created: 'CREATED', inspection: 'INSPECTION',
       product: 'PRODUCT / MATERIAL', category: 'CATEGORY', related: 'LINKED BATCHES',
@@ -522,8 +540,8 @@ const en: Dict = {
       pickProductAria: 'Choose a product for batch {code}',
     },
     ov: {
-      kicker: 'ORGANISATION WORKSPACE', friend: 'there',
-      sub: 'Here is the inspection and proof status stored in Supabase.',
+      kicker: 'ORGANISATION WORKSPACE', friend: 'there', welcome: 'Welcome, {name}',
+      sub: "Track your organisation's inspections, QA approvals, and proof status.",
       seeBatch: 'View batches', tagTop: 'Organisation data', tagBottom: 'Auto synced',
       guideTitle: 'Explore PANDU features', guideText: 'A short guide to the QC flow, QA approval, private documents and public verification.',
       m1: 'Total batches', m1s: 'In this organisation', m2: 'Awaiting QA', m2s: 'Needs review',
@@ -626,7 +644,7 @@ const en: Dict = {
       noneTitle: 'No wallet connected', noneText: 'Connect MetaMask optionally. The process asks for a signature with no gas fee.',
       waiting: 'Waiting…', connect: 'Connect wallet',
     },
-    foot: { stored: 'Organisation data stored in Supabase', stats: '{b} batches · {s} suppliers · {p} proofs', check: 'Check a public proof' },
+    foot: { stored: 'Organisation workspace', stats: '{b} batches · {s} suppliers · {p} proofs', check: 'Check a public proof' },
   },
 };
 

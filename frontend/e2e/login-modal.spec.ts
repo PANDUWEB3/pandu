@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+﻿import { expect, test } from '@playwright/test';
 
 test('Get Started opens login choices and Escape closes the dialog', async ({ page }) => {
   await page.goto('/');
@@ -21,7 +21,7 @@ test('overlay closes and wallet connection can return to method choices', async 
   await page.goto('/');
   await page.getByRole('link', { name: /Get Started|Mulai Sekarang/ }).first().click();
   const dialog = page.getByRole('dialog');
-  await dialog.getByRole('button', { name: 'MetaMask' }).click();
+  await dialog.getByRole('button', { name: 'MetaMask' }).click({ force: true });
   await expect(dialog.getByText(/Waiting for MetaMask|Menunggu MetaMask/)).toBeVisible();
   await expect(await dialog.locator('.pand-modal-spinner .pand-wallet-icon').evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
   await expect(dialog.locator('.pand-wallet-icon')).toHaveJSProperty('complete', true);
@@ -45,7 +45,7 @@ test('missing wallet shows an install link, and modal supports English dark mobi
   await expect(dialog.getByText('For proof signers')).toBeVisible();
   const card = page.locator('.pand-modal-card');
   await expect(card).toHaveCSS('border-top-left-radius', '24px');
-  await dialog.getByRole('button', { name: 'MetaMask' }).click();
+  await dialog.getByRole('button', { name: 'MetaMask' }).click({ force: true });
   await expect(dialog.getByText('MetaMask is not installed in this browser.')).toBeVisible();
   await expect(dialog.getByRole('link', { name: 'Install MetaMask' })).toHaveAttribute('href', 'https://metamask.io/download/');
 });

@@ -345,10 +345,12 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
   const [explorerLink, setExplorerLink] = useState('');
   const [shareProof, setShareProof] = useState<DbRow | null>(null);
   const [chainHealth, setChainHealth] = useState<ChainHealth | null>(null);
+  const [recoveryPassphraseSession, setRecoveryPassphraseSession] = useState('');
   const [profileName, setProfileName] = useState('');
   const [profileMenu, setProfileMenu] = useState(false);
   const [orgDropdownOpen, setOrgDropdownOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  useEffect(() => { setRecoveryPassphraseSession(''); }, [session?.user.id]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setPaletteOpen(true); }
@@ -639,7 +641,7 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
       const accounts = (await window.ethereum!.request({ method: 'eth_requestAccounts' })) as string[];
       const kekWallet = await deriveKeyFromWallet(accounts[0]);
       
-      let recoveryPassphrase = sessionStorage.getItem('PANDU.recovery-passphrase');
+      let recoveryPassphrase = recoveryPassphraseSession;
       if (!recoveryPassphrase) {
         recoveryPassphrase = window.prompt('Masukkan Frasa Sandi Pemulihan (Recovery Passphrase) darurat untuk membungkus DEK berkas:') || '';
         try {
@@ -647,7 +649,7 @@ export default function Workspace({ page = 'overview' }: { page?: string }) {
         } catch (err: any) {
           throw new Error(`${err.message} Frasa sandi hanya untuk pemulihan milik Anda sendiri, bukan untuk verifikator.`);
         }
-        sessionStorage.setItem('PANDU.recovery-passphrase', recoveryPassphrase);
+        setRecoveryPassphraseSession(recoveryPassphrase);
       }
 
       // 2. Pola Envelope Encryption: Enkripsi berkas menggunakan DEK acak, bungkus DEK dengan KEK Wallet & Recovery Passphrase

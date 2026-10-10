@@ -1,0 +1,6 @@
+﻿/* Tailwind utilities only (no preflight) so existing hand-written CSS is untouched.
+   `dark:` follows the app's html[data-theme='dark'] switch, not the OS setting. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));

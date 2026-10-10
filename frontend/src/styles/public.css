@@ -1,0 +1,25 @@
+.public-shell{min-height:100vh;background:var(--canvas)}
+.public-label{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:11px;font-weight:600}
+.public-page{max-width:620px;padding:64px 22px 32px;margin:0 auto}
+.public-card{padding:28px;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
+.public-card h1{font:700 25px Manrope,sans-serif;letter-spacing:-.04em;margin:9px 0 6px}
+.public-intro{color:var(--muted);font-size:12px;line-height:1.5;margin:0 0 21px}
+.public-status{display:grid;gap:10px;padding:16px;border-radius:9px;background:var(--green-pale);border:1px solid #d5e8db}
+.public-status>strong{font-size:12px;line-height:1.5;color:#3f5849}
+.public-status-mismatch,.public-status-revoked{background:var(--red-pale);border-color:#efd7d3}
+.public-status-unavailable,.public-status-not_found{background:var(--amber-pale);border-color:#efe3c3}
+.public-proof-id{display:grid;gap:5px;padding:16px 0;border-bottom:1px solid #edf0ee}
+.public-proof-id span,.public-facts span{font-size:10px;color:#76837d}
+.public-proof-id strong{font:700 14px Manrope,sans-serif}
+.public-facts{display:grid;grid-template-columns:1fr 1fr;gap:17px 20px;padding:17px 0}
+.public-facts>div{display:grid;gap:5px}
+.public-facts strong{font-size:11px;line-height:1.4}
+.public-explorer{display:flex;align-items:center;justify-content:center;gap:7px;min-height:40px;margin:2px 0 15px;padding:0 12px;border:1px solid #c8dacf;border-radius:8px;color:var(--brand);font-size:11px;font-weight:700;text-decoration:none}
+.public-explainer{padding-top:13px;border-top:1px solid #edf0ee}
+.public-explainer summary{display:flex;align-items:center;gap:6px;list-style:none;color:#56675f;font-size:10px;font-weight:700;cursor:pointer}
+.public-explainer summary::-webkit-details-marker{display:none}
+.public-explainer p{margin:9px 0 0;color:var(--muted);font-size:10px;line-height:1.55}
+.public-loading{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;padding:18px 0}
+.back-link{display:block;text-align:center;margin-top:16px;color:#64746d;font-size:10px;text-decoration:none}
+.back-link:hover{color:var(--brand)}
+@media(max-width:520px){.public-page{padding:38px 14px 24px}.public-card{padding:20px}.public-card h1{font-size:21px}.public-facts{gap:14px 12px}}

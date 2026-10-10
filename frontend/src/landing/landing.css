@@ -1,0 +1,98 @@
+/*
+ * PANDU design system entry (landing, login, verify).
+ * Preflight is intentionally NOT imported so the legacy workspace CSS keeps rendering as before.
+ * Utilities are `important` because the legacy global stylesheet is unlayered
+ * (e.g. `a { color: inherit }`) and would otherwise win over layered utilities.
+ */
+@layer theme, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) important;
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme {
+  --color-brand: #f97316;
+  --color-brand-600: #ea580c;
+  --color-brand-700: #c2410c;
+  --color-brand-50: #fff7ed;
+  --color-brand-100: #ffedd5;
+  --color-ink: #1f2937;
+  --color-ink-soft: #4b5563;
+  --color-canvas: #fafafa;
+  --color-mist: #f3f4f6;
+  --color-pure: #ffffff;
+  --color-panel: #1f2937;
+  --font-display: "Manrope", "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --animate-float: float 7s ease-in-out infinite;
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-9px); }
+  }
+}
+
+/* Dark mode = same tokens, remapped. Every utility reads these variables. */
+html[data-theme='dark'] {
+  --color-ink: #f3f4f6;
+  --color-ink-soft: #aab2bf;
+  --color-canvas: #0e1014;
+  --color-mist: #171a20;
+  --color-white: #14171c;
+  --color-panel: #181b22;
+  --color-gray-50: #171a20;
+  --color-gray-100: #1f232b;
+  --color-gray-200: #2a2f39;
+  --color-gray-300: #3a4150;
+  --color-gray-400: #7d8697;
+  --color-gray-500: #9aa3b2;
+  --color-brand-50: #2a1809;
+  --color-brand-100: #3d2210;
+  --color-brand-700: #fdba74;
+  --color-emerald-50: #0e2a20;
+  --color-emerald-200: #166534;
+  --color-emerald-700: #6ee7b7;
+  --color-amber-50: #2b210a;
+  --color-amber-200: #854d0e;
+  --color-amber-700: #fcd34d;
+  --color-red-50: #2d1215;
+  --color-red-200: #991b1b;
+  --color-red-700: #fca5a5;
+  --pd-grid: rgb(255 255 255 / 0.05);
+}
+html { --pd-grid: rgb(31 41 55 / 0.06); }
+
+/* Scoped base styles (replaces Tailwind preflight for these pages only). */
+.lp {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: clip;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+.lp *, .lp *::before, .lp *::after { box-sizing: border-box; }
+.lp h1, .lp h2, .lp h3, .lp p, .lp ul, .lp ol, .lp dl, .lp dd, .lp figure { margin: 0; padding: 0; }
+.lp ul, .lp ol { list-style: none; }
+.lp a { text-decoration: none; }
+.lp button { font-family: inherit; border: 0; background: none; padding: 0; color: inherit; }
+.lp input { font-family: inherit; }
+.lp :focus-visible { outline: 2px solid var(--color-brand); outline-offset: 3px; border-radius: 8px; }
+.lp svg { display: block; flex: none; }
+.lp summary { list-style: none; }
+.lp summary::-webkit-details-marker { display: none; }
+
+/* Backdrop: fine grid fading out toward the edges. */
+.lp-grid {
+  background-image:
+    linear-gradient(to right, var(--pd-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--pd-grid) 1px, transparent 1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, #000 30%, transparent 75%);
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, #000 30%, transparent 75%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lp * { animation: none !important; transition-duration: 0.01ms !important; }
+}

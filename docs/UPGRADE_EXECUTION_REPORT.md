@@ -1,63 +1,66 @@
 # Laporan Eksekusi Upgrade PANDU Fase 2–7
 
-Tanggal: 2026-10-10  
-Status: **TERHENTI sebelum Fase 2** karena gerbang wajib belum lengkap. Tidak ada perubahan source, skema, database, kontrak, atau jaringan.
+Tanggal pemeriksaan: 2026-10-10. Laporan ini diperbarui pada setiap gerbang fase.
 
-## Keputusan
+## Keadaan Git yang diverifikasi
 
-Instruksi mengharuskan semua gerbang otomatis lolos sebelum merge dan sebelum melanjutkan fase. Gerbang `gitleaks` tidak dapat dijalankan karena executable tidak tersedia pada lingkungan Windows ini. `slither` juga mengembalikan exit 1 dengan 7 temuan yang harus ditriase; laporan baseline sebelumnya telah mencatat kategori temuan namun gerbang saat ini belum dikonfigurasi untuk menerima exit tersebut. Karena itu tidak ada fase yang dimulai atau di-merge.
+- Root repo diverged during work: the phase branch was externally renamed to `main` (reflog records `Branch: renamed refs/heads/feat/fase-2-encryption to refs/heads/main`). I restored `feat/fase-2-encryption` at the same commit. `feat/upgrade-all` remains at `61c3732`; repo contract `feat/upgrade-all` remains at `2d0a502`.
+- Workspace bersih sebelum pekerjaan Fase 2. Branch kerja aktif: `feat/fase-2-encryption` pada kedua repo.
+- Repo v2 tidak dimodifikasi dan tidak ada transaksi, deployment, grant role, akses Supabase utama, atau pembacaan secret.
 
-Workspace awal bersih pada `main` (root commit `20f0f4e`; repo kontrak `2d0a502`). Branch integrasi `feat/upgrade-all` dibuat pada kedua repo sesuai alur yang diminta. Root branch creation memerlukan izin tulis Git metadata. Belum dibuat branch fase dan belum ada commit pekerjaan fase.
+## Status fase
 
-## Konteks repo yang diperiksa
-
-- `docs/BASELINE_REPORT.md`, `docs/THREAT_MODEL.md`, `docs/ARCHITECTURE.md`, `docs/UPGRADE_MASTER_PLAN.md`
-- `documentation/DATABASE_ENCRYPTION_MIGRATION_PLAN.md`, `documentation/KEY_CUSTODY.md`, `documentation/SELECTIVE_DISCLOSURE_MERKLE_DESIGN.md`
-- Repo memuat `frontend/src/merkle.ts`, tes `frontend/test/merkle.test.ts`, `frontend/test/envelope-encryption.test.ts`, dan `frontend/test/recovery-kdf.test.ts`.
-- `frontend/src/dbcrypto.ts` tidak ada pada checkout ini. Ini belum dinilai sebagai implementasi Fase 2; implementasi fase tidak dimulai karena gerbang.
-- Kontrak v2 tetap tidak diubah. Tidak ada akses ke Supabase utama, broadcast, deploy, grant role, atau pemakaian private key.
-
-## Gerbang baseline
-
-| Gerbang | Hasil aktual |
-|---|---|
-| `forge build` | Lulus dengan `solc 0.8.28`; peringatan forge lint baseline pada timestamp dan event external-call |
-| `forge test` | **29 lulus, 0 gagal, 0 skip**; tiga fuzz test masing-masing 256 runs |
-| `forge fmt --check` | Lulus |
-| `slither . --exclude-dependencies` | Exit 1; 7 hasil. Temuan: `incorrect-equality` pada sentinel proofId dan perbandingan evidenceHash (dua lokasi); `timestamp` pada deadline anchor/revoke dan temuan duplikasi equality detector (empat lokasi); `pragma` campuran ^0.8.20 dependency OZ dan 0.8.28 source. Kesamaan sentinel/hash disengaja untuk pemeriksaan nilai khusus/integritas; deadline timestamp adalah batas waktu EIP-712; perbedaan pragma berasal dari dependency OZ yang kompatibel. Tidak ada analisis kontrak baru karena belum ada perubahan kontrak. |
-| Backend `npm.cmd test` | **34 lulus, 0 gagal, 0 skip** |
-| Backend `npm.cmd run build` | Lulus |
-| Backend `npm.cmd audit` | Lulus setelah izin jaringan; **0 kerentanan** |
-| Frontend `npm.cmd test` | **52 lulus, 0 gagal**, 9 file |
-| Frontend `npm.cmd run build` | Lulus (`tsc -b` dan Vite 6.4.4) |
-| Frontend `npm.cmd audit` | Lulus setelah izin jaringan; **0 kerentanan** |
-| `gitleaks` | **Tidak dapat dijalankan**: command tidak tersedia. Gerbang ini wajib dan belum lolos. |
-| `cargo audit` | Tidak dapat dijalankan: Cargo tidak tersedia; termasuk pemblokir toolchain Fase 5/7, bukan gerbang Node/Solidity baseline. |
-
-Pemeriksaan awal `forge` dan `slither` di sandbox gagal karena Foundry tidak dapat mendeteksi home `C:\Users\Administrator`. Diulang dengan akses compiler/cache di luar sandbox; hasil build/test di atas berhasil. Kedua npm audit juga diulang dengan akses jaringan setelah sandbox tidak dapat mencapai registry.
-
-## Status fase 2–7
-
-| Fase | Status | Bukti/alasan |
+| Fase | Status | Bukti dan batas |
 |---|---|---|
-| 2 — Enkripsi dan kunci | **Terblokir, belum dimulai** | Gerbang `gitleaks` belum lolos. File envelope yang ada belum diverifikasi sebagai pemenuhan fase; `frontend/src/dbcrypto.ts` tidak ditemukan. |
-| 3 — Merkle/selective disclosure | **Terblokir, belum dimulai** | Terdapat implementasi TypeScript di `frontend/src/merkle.ts`, tetapi perubahan fase, vector Rust/backend bersama, snapshot, dan gerbang tidak dikerjakan. |
-| 4 — Kontrak tambahan | **Terblokir, belum dimulai** | Hanya kontrak registry v2 lama ditemukan; tidak dibuat kontrak tambahan atau transaksi. |
-| 5 — RISC Zero | **Terblokir, belum dimulai** | Cargo/Rust tidak tersedia; belum ada riset sumber terkini atau instalasi toolchain. Tidak ada klaim bukti end-to-end. |
-| 6 — Integrasi aplikasi | **Terblokir, belum dimulai** | Tidak ada endpoint atau UI fase baru. |
-| 7 — Kualitas/dokumentasi | **Sebagian** | Laporan ini dan gerbang baseline dicatat. E2E testnet tidak dijalankan. `gitleaks`/`cargo audit` belum tersedia. |
+| 2 — Enkripsi data dan kunci | **Sebagian** | Primitive AES-GCM/AAD, pembungkusan ODK, PBKDF2 recovery, ECDH invitation, rotasi kid, blind-index HMAC, migrasi aditif, RLS key envelope, RPC ciphertext-only, dan klasifikasi kolom sudah ditambahkan. Namun Workspace belum dipindahkan penuh ke ODK/envelope; flow proof lama masih membaca plaintext dan test SQL lokal belum dijalankan karena `supabase`, `psql`, dan Docker tidak tersedia. Tidak aman menyatakan Fase 2 selesai. |
+| 3 — Merkle/selective disclosure | **Belum dimulai** | Menunggu gerbang Fase 2 dan implementasi aplikasi ciphertext-only. |
+| 4 — Kontrak tambahan | **Belum dimulai** | Tidak ada perubahan kontrak. |
+| 5 — RISC Zero | **Belum dimulai** | Cargo/RISC Zero belum tersedia atau dipasang. |
+| 6 — Integrasi aplikasi | **Belum dimulai** | Menunggu fase sebelumnya. |
+| 7 — Kualitas/dokumentasi | **Sebagian** | Laporan dan fallback scan disiapkan; audit akhir dan E2E harness belum dikerjakan. |
 
-## File berubah dan dependensi
+## File yang ditambahkan/diubah pada Fase 2
 
-- Root repo: `docs/UPGRADE_EXECUTION_REPORT.md` (laporan blocker ini). Tidak ada dependensi baru.
-- Repo kontrak: tidak ada file kerja fase yang berubah.
-- Tidak ada instalasi tool/dependensi.
+Root repo:
 
-## Langkah agar pekerjaan dapat dilanjutkan
+- `frontend/src/dbcrypto.ts`, `frontend/test/dbcrypto.test.ts`
+- `backend/src/security/db-envelope.js`, `backend/src/security/identity-hash.js`
+- `backend/src/config/runtime.js`, `backend/test/runtime-config.test.mjs`, `backend/test/database-privacy.test.mjs`
+- `supabase/migrations/202610100004_client_side_encryption.sql`
+- `supabase/tests/202610100004_key_envelopes_rls.sql` (siap untuk Supabase lokal; belum dijalankan)
+- `supabase/migrations/202610100005_drop_plaintext_after_verified_cutover.sql` (manual saja, belum dijalankan)
+- `docs/KEY_MANAGEMENT.md`, `docs/UPGRADE_EXECUTION_REPORT.md`, `scripts/security-fallback-scan.ps1`
 
-1. Sediakan executable `gitleaks` pada PATH lingkungan Windows, lalu jalankan ulang seluruh gerbang pada branch `feat/upgrade-all`.
-2. Triase 7 temuan Slither dan tentukan konfigurasi gate yang menerima temuan terklasifikasi tanpa menyembunyikan detector atau menurunkan cakupan.
-3. Bila gerbang lolos, buat branch Fase 2 dan lanjutkan urut-urutan fase sesuai master plan; gerbang harus dilaporkan sebelum tiap merge.
-4. Sebelum Fase 5/7, pasang toolchain Rust/RISC Zero hanya setelah kebutuhan dan ukuran instalasi dicatat; tidak ada installer dijalankan pada eksekusi ini.
+Repo kontrak:
 
-**Tidak ada langkah manual Supabase atau blockchain yang dilakukan/disarankan untuk eksekusi ini**, karena belum ada perubahan fase yang siap ditinjau.
+- `slither-baseline.json`, `script/compare-slither-baseline.mjs`
+
+Dependensi baru: tidak ada. Web Crypto API dan dependensi Zod yang sudah ada dipakai.
+
+## Gerbang dan pemindaian
+
+| Gerbang | Hasil |
+|---|---|
+| `forge build` | Lulus; `solc 0.8.28` |
+| `forge test` | **29 lulus, 0 gagal, 0 skip** (baseline; tidak ada perubahan Solidity Fase 2) |
+| `forge fmt --check` | Lulus |
+| Slither | **7 baseline, 0 baru** pada Fase 2. JSON dibandingkan dengan `node script/compare-slither-baseline.mjs slither-baseline.json <report.json>`. Baseline di `smart-contract/slither-baseline.json` mengklasifikasikan semua temuan. |
+| Backend test | **36 lulus, 0 gagal, 0 skip** |
+| Backend build | Lulus (`node -c src/server.js`) |
+| Frontend test | **58 lulus, 0 gagal**, 10 file |
+| `tsc`/frontend build | Lulus (`tsc -b` + Vite 6.4.4) |
+| `npm audit` | Backend **0 vulnerabilities**; frontend **0 vulnerabilities** |
+| `gitleaks version` | Command tidak tersedia. Fallback `scripts/security-fallback-scan.ps1 -History` dijalankan di root: 2 file kerja/4 commit cocok dengan pola key/token/hash; file adalah vector EIP-712 dan canonical hash, sedangkan match historis `Verify.tsx` adalah sentinel hash pada kondisi revoke. Di repo kontrak: 15 file/7 commit cocok; semuanya berada di vendored forge-std, test/fixture, deployment/verification JSON, atau dokumentasi berisi nilai hash/alamat publik. Ini pemindaian pola terbatas, bukan pengganti penuh Gitleaks. |
+| SQL lokal | Belum dapat dijalankan; `supabase`, `psql`, dan Docker tidak ada pada PATH. Tidak ada migrasi yang dieksekusi. |
+
+## Keputusan dan risiko saat ini
+
+- Semua field ciphertext memakai AES-256-GCM dengan IV acak 12 byte dan AAD yang memuat organization/table/row/column/kid. PBKDF2-SHA256 ditetapkan 600.000 iterasi dengan salt acak; tidak ada dependensi kriptografi baru.
+- Blind index hanya tersedia sebagai primitive HMAC dengan kunci khusus. Belum ada kolom blind index atau nilai bisnis berkardinalitas rendah yang diindeks.
+- Migrasi plaintext-drop menunggu client backfill, verifikasi, perubahan RPC dan pemeriksaan restore di database lokal. Jangan jalankan sebelum semua prasyaratnya dibuktikan.
+- Risiko utama yang belum terselesaikan: Workspace belum menggunakan key envelope untuk membaca/menulis semua tabel; proof API lama masih memproses plaintext; flow ECDH belum terhubung ke undangan anggota; rotasi bertahap belum ada worker UI. Karena itu Fase 2 masih parsial, meski gerbang kode yang tersedia lulus.
+- Jangan gunakan data nyata sebelum seluruh alur klien selesai dan audit independen dilakukan.
+
+## Lanjutan
+
+Jalankan gerbang lengkap Fase 2, perbaiki setiap regresi/temuan baru, commit dan fast-forward hanya setelah gerbang lolos. Sesudah itu lanjut Fase 3 tanpa deploy atau menyentuh Supabase utama.

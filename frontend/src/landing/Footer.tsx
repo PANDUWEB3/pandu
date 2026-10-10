@@ -4,8 +4,8 @@ import { Logo } from './ui';
 export default function Footer() {
   const { t } = useI18n();
   const links = [
-    { label: t.nav.how, href: '/#how-it-works' },
-    { label: t.nav.who, href: '/#who-its-for' },
+    { label: t.nav.how, href: t.nav.home === 'PANDU home' ? '/how-it-works' : '/cara-kerja' },
+    { label: t.nav.who, href: t.nav.home === 'PANDU home' ? '/who-its-for' : '/untuk-siapa' },
     { label: t.nav.verify, href: '/verify' },
     { label: t.nav.login, href: '/login' },
   ];

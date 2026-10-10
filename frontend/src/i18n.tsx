@@ -21,11 +21,13 @@ const id = {
   },
   industries: { title: 'Dibuat untuk berbagai jenis ekspor', aria: 'Industri yang didukung', logistics: 'Logistik', agri: 'Pangan & Agri', commodities: 'Komoditas', manufacturing: 'Manufaktur' },
   how: {
-    eyebrow: 'Cara kerja', title: 'Dari lantai gudang ke layar pembeli Anda.', sub: 'Tiga langkah. Tim Anda bekerja seperti biasa, PANDU yang menghubungkan tiap langkah.',
+    eyebrow: 'Cara kerja', title: 'Dari lantai gudang ke layar pembeli Anda.', sub: 'Lima langkah yang menghubungkan inspeksi, persetujuan QA, pencatatan, dan pemeriksaan pembeli.',
     steps: [
-      { title: 'Catat Inspeksi', text: 'Masukkan hasil ukur dan lampirkan foto atau dokumen, tepat setelah pemeriksaan.', tag: 'Inspektur' },
-      { title: 'Dapatkan Persetujuan QA', text: 'Reviewer QA yang terpisah memeriksa hasilnya lalu menyetujui. Setiap persetujuan diberi cap waktu.', tag: 'Tim QA' },
-      { title: 'Bagikan Bukti Digital', text: 'Kirim satu tautan atau kode QR. Pembeli melihat buktinya dan bisa mengeceknya tanpa akun.', tag: 'Pembeli' },
+      { title: 'Catat inspeksi', text: 'Inspektur memasukkan hasil ukur serta melampirkan foto atau dokumen setelah pemeriksaan.', tag: 'Inspektur' },
+      { title: 'Tinjau dan setujui', text: 'Tim QA yang terpisah memeriksa hasil dan menyetujui catatan.', tag: 'QA' },
+      { title: 'Tanda tangani proof', text: 'Persetujuan QA ditandatangani untuk menjaga jejak persetujuan.', tag: 'Penandatangan' },
+      { title: 'Catat ringkasan di blockchain', text: 'Ringkasan proof dicatat sebagai komitmen digital; berkas asli tetap privat.', tag: 'Pencatatan' },
+      { title: 'Bagikan dan verifikasi', text: 'Bagikan tautan atau QR. Pembeli dapat memeriksa bukti tanpa akun.', tag: 'Pembeli' },
     ],
   },
   who: {
@@ -43,6 +45,8 @@ const id = {
       { title: 'Dokumen Anda tetap privat', text: 'Hanya ringkasan bukti yang dibagikan. Dokumen asli tetap berada di tim Anda.' },
     ],
   },
+  landingSummary: { title: 'Alur bukti yang jelas, dari inspeksi sampai verifikasi.', how: 'Lihat cara kerja', who: 'Temukan manfaat untuk tim Anda' },
+  audience: { title: 'Dirancang untuk setiap pihak dalam rantai pasok', cards: [ { title: 'Eksportir & produsen', text: 'Satukan catatan inspeksi dan bagikan bukti kualitas kepada pembeli.' }, { title: 'QA & inspektur', text: 'Catat pemeriksaan, pisahkan persetujuan, dan tanda tangani proof.' }, { title: 'Pembeli & importir', text: 'Periksa ringkasan proof dari tautan atau QR tanpa membuat akun.' }, { title: 'Auditor', text: 'Telusuri persetujuan dan kecocokan proof dengan catatan blockchain.' } ] },
   cta: { l1: 'Buat perdagangan global lebih mudah dipahami.', l2: 'Mulai dari satu batch.', sub: 'Masuk dan buat bukti digital pertama Anda hari ini.' },
   footer: { rights: 'Hak cipta dilindungi.' },
   login: {
@@ -332,11 +336,13 @@ const en: Dict = {
   },
   industries: { title: 'Built for every kind of export', aria: 'Supported industries', logistics: 'Logistics', agri: 'Food & Agri', commodities: 'Commodities', manufacturing: 'Manufacturing' },
   how: {
-    eyebrow: 'How it works', title: "From the warehouse floor to your buyer's screen.", sub: 'Three steps. Your team works as usual, PANDU links each step together.',
+    eyebrow: 'How it works', title: "From the warehouse floor to your buyer's screen.", sub: 'Five steps connect inspection, QA approval, proof recording, and buyer verification.',
     steps: [
-      { title: 'Record Inspection', text: 'Enter the measured results and attach photos or documents, right after the check.', tag: 'Inspector' },
-      { title: 'Get QA Approval', text: 'A separate QA reviewer checks the result and signs off. Every approval is time-stamped.', tag: 'QA team' },
-      { title: 'Share Digital Proof', text: 'Send one link or QR code. Your buyer sees the proof and can check it without an account.', tag: 'Buyer' },
+      { title: 'Record inspection', text: 'Inspectors enter measurements and attach photos or documents after each check.', tag: 'Inspector' },
+      { title: 'Review and approve', text: 'A separate QA team reviews the result and approves the record.', tag: 'QA' },
+      { title: 'Sign the proof', text: 'QA approval is signed to preserve a clear approval trail.', tag: 'Signer' },
+      { title: 'Record the summary on blockchain', text: 'The proof summary is recorded as a digital commitment; source files stay private.', tag: 'Recording' },
+      { title: 'Share and verify', text: 'Share a link or QR. Buyers can check the proof without an account.', tag: 'Buyer' },
     ],
   },
   who: {
@@ -354,6 +360,8 @@ const en: Dict = {
       { title: 'Your documents stay private', text: 'Only a short proof summary is shared. Originals remain with your team.' },
     ],
   },
+  landingSummary: { title: 'A clear proof journey, from inspection to verification.', how: 'See how it works', who: 'Find the right fit for your team' },
+  audience: { title: 'Built for every role in the supply chain', cards: [ { title: 'Exporters & producers', text: 'Bring inspection records together and share quality proof with buyers.' }, { title: 'QA & inspectors', text: 'Record checks, separate approvals, and sign off proof.' }, { title: 'Buyers & importers', text: 'Check a proof summary from a link or QR without creating an account.' }, { title: 'Auditors', text: 'Trace approvals and compare proof against blockchain records.' } ] },
   cta: { l1: 'Make global trade easier to understand.', l2: 'Start with one batch.', sub: 'Sign in and create your first digital proof today.' },
   footer: { rights: 'All rights reserved.' },
   login: {

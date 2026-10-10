@@ -1,12 +1,16 @@
 -- Migration: Drop old file storage and transition to privacy-first Google OAuth
--- Drops evidence files and storage bucket.
+-- Drops evidence files storage bucket and updates evidence_files table for Pinata CIDs.
 -- Updates user tracking to only store Google OAuth sub hashes.
 
-DROP TABLE IF EXISTS public.evidence_files CASCADE;
 DROP POLICY IF EXISTS evidence_storage_read_member ON storage.objects;
 DROP POLICY IF EXISTS evidence_storage_insert_qc ON storage.objects;
 DROP POLICY IF EXISTS evidence_storage_delete_qc ON storage.objects;
 DELETE FROM storage.buckets WHERE id = 'quality-evidence';
+
+-- Alter evidence_files to use CID
+ALTER TABLE public.evidence_files DROP COLUMN bucket_id;
+ALTER TABLE public.evidence_files DROP COLUMN object_path;
+ALTER TABLE public.evidence_files ADD COLUMN cid text NOT NULL DEFAULT '';
 
 -- We only store Google OAuth sub hash and wallet mapping.
 CREATE TABLE IF NOT EXISTS public.user_google_accounts (

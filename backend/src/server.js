@@ -11,10 +11,13 @@ import {
 } from 'ethers';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
+import { assertProductionEnv, parseTrustProxy } from './env-guard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-app.set('trust proxy', process.env.TRUST_PROXY || 1);
+// Wajib di produksi: TRUST_PROXY + REDIS_URL (lihat PANDU_Deployment_Runbook_v1.0.md)
+assertProductionEnv(process.env);
+app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
 const port = Number(process.env.PORT || 8787);
 const dataFile = path.resolve(__dirname, '..', process.env.DATA_FILE || './data/demo-state.json');
 const uploadDir = path.resolve(__dirname, '..', process.env.UPLOAD_DIR || './data/uploads');
@@ -74,6 +77,12 @@ const abi = [
   'event ProofRevoked(bytes32 indexed proofId,address indexed revoker,bytes32 reasonHash,uint64 timestamp)',
 ];
 const registryInterface = new Interface(abi);
+const legacyRegistryAddress = process.env.PANDU_LEGACY_REGISTRY_ADDRESS
+  ? getAddress(process.env.PANDU_LEGACY_REGISTRY_ADDRESS)
+  : null;
+const legacyRegistryAbi = [
+  'function getProof(bytes32 proofId) view returns ((bytes32 proofId,bytes32 batchRef,bytes32 evidenceHash,address attester,uint64 timestamp,bool revoked,address revoker,uint64 revokedAt))',
+];
 
 // Zod schemas untuk validasi ketat input
 const AnchorBodySchema = z.object({
@@ -268,70 +277,7 @@ function getClientIp(req) {
   return req.ip || req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket?.remoteAddress || '127.0.0.1';
 }
 
-class RateLimiter {
-  constructor() {
-    this.memoryMap = new Map();
-    this.redis = null;
-    this.initCleanup();
-    this.initRedis();
-  }
-
-  initCleanup() {
-    // TTL Cleanup: timer periodik membersihkan entri kedaluwarsa tanpa memblokir event loop
-    const timer = setInterval(() => {
-      const now = Date.now();
-      for (const [key, entry] of this.memoryMap.entries()) {
-        if (now > entry.resetAt) {
-          this.memoryMap.delete(key);
-        }
-      }
-    }, 30_000);
-    timer.unref();
-  }
-
-  async initRedis() {
-    if (process.env.REDIS_URL) {
-      try {
-        const { default: Redis } = await import('ioredis');
-        this.redis = new Redis(process.env.REDIS_URL, {
-          lazyConnect: true,
-          maxRetriesPerRequest: 1,
-          connectTimeout: 3000,
-        });
-        await this.redis.connect();
-        console.log('[RateLimiter] Terhubung ke Redis untuk rate limiting terdistribusi.');
-      } catch (err) {
-        console.warn('[RateLimiter] Gagal koneksi Redis, fallback ke in-memory lokal:', err.message);
-        this.redis = null;
-      }
-    }
-  }
-
-  async check(key, limit = 10, windowMs = 60_000) {
-    if (this.redis && this.redis.status === 'ready') {
-      try {
-        const redisKey = `pandu:rl:${key}`;
-        const count = await this.redis.incr(redisKey);
-        if (count === 1) {
-          await this.redis.pexpire(redisKey, windowMs);
-        }
-        return count <= limit;
-      } catch (err) {
-        console.warn('[RateLimiter] Redis error, fallback ke in-memory:', err.message);
-      }
-    }
-
-    const now = Date.now();
-    const entry = this.memoryMap.get(key) || { count: 0, resetAt: now + windowMs };
-    if (now > entry.resetAt) {
-      entry.count = 0;
-      entry.resetAt = now + windowMs;
-    }
-    entry.count += 1;
-    this.memoryMap.set(key, entry);
-    return entry.count <= limit;
-  }
-}
+import { RateLimiter, REDIS_LUA_RATELIMIT } from './rate-limiter.js';
 
 const rateLimiter = new RateLimiter();
 async function checkRateLimit(key, limitPerMinute = 10) {
@@ -817,6 +763,23 @@ app.get('/api/public/proofs/:token', async (req, res) => {
     const proofProvider = getProviderForChain(proof.chain_id);
     const proofNetwork = await proofProvider.getNetwork();
     if (proofNetwork.chainId !== BigInt(proof.chain_id)) throw new Error('RPC verifikasi tersambung ke jaringan yang salah.');
+    if (legacyRegistryAddress && getAddress(proof.contract_address) === legacyRegistryAddress) {
+      const legacyRegistry = new Contract(legacyRegistryAddress, legacyRegistryAbi, proofProvider);
+      const chainProof = await legacyRegistry.getProof(proofIdBytes(proof.public_id));
+      const storedCommitment = `0x${bytes32Hex(proof.commitment)}`;
+      const snapshotCommitment = `0x${sha256Hex(canonicalJson(proof.public_snapshot))}`;
+      const same = chainProof.evidenceHash.toLowerCase() === storedCommitment.toLowerCase()
+        && snapshotCommitment.toLowerCase() === storedCommitment.toLowerCase()
+        && chainProof.batchRef.toLowerCase() === dbBatchRef(proof.organization_id, batch.batch_code).toLowerCase();
+      const status = !same ? 'LEGACY_MISMATCH' : chainProof.revoked ? 'LEGACY_REVOKED' : 'LEGACY_UNSIGNED';
+      const message = status === 'LEGACY_UNSIGNED'
+        ? 'Legacy v1: catatan cocok, tetapi transaksi anchor tidak memeriksa tanda tangan penerbit.'
+        : status === 'LEGACY_REVOKED'
+          ? 'Legacy v1: bukti telah dicabut; transaksi anchor tidak memeriksa tanda tangan penerbit.'
+          : 'Legacy v1: ringkasan tidak cocok dengan catatan blockchain dan tanda tangan penerbit tidak diperiksa.';
+      const proofExplorer = explorerFor(proof.chain_id);
+      return res.json({ status, legacy: true, proof: proof.public_snapshot, commitment: storedCommitment, transactionHash: proof.transaction_hash, blockNumber: proof.block_number, anchoredAt: Number(chainProof.timestamp), attester: null, relayer: chainProof.attester, revokedAt: Number(chainProof.revokedAt), revoker: chainProof.revoker, revokeReason: null, network: chainLabelFor(proof.chain_id), explorerUrl: proof.transaction_hash ? `${proofExplorer}/tx/${proof.transaction_hash}` : null, message });
+    }
     const registry = new Contract(getAddress(proof.contract_address), abi, proofProvider);
     const chainProof = await registry.getProof(proofIdBytes(proof.public_id));
     const storedCommitment = `0x${bytes32Hex(proof.commitment)}`;

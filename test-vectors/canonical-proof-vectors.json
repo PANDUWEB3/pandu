@@ -1,0 +1,49 @@
+[
+  {
+    "description": "Unsorted primitive keys with mixed types (string, null, boolean, integer)",
+    "input": {
+      "z": 1,
+      "a": "test",
+      "m": true,
+      "b": null
+    },
+    "expectedCanonicalJson": "{\"a\":\"test\",\"b\":null,\"m\":true,\"z\":1}",
+    "expectedEvidenceHash": "0x06af64f456e3c8f4994f2bebce1d64f9b87924d7e8f449d2eae0ea1d4136f1f0"
+  },
+  {
+    "description": "Full realistic PANDU Quality Proof Snapshot v2 with per-file HMAC and salt",
+    "input": {
+      "supplier": "PT Baja Nusantara",
+      "salt": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "material": "Pelat baja SS400",
+      "proofId": "PANDU-QP-2026-000001",
+      "inspection": {
+        "result": "PASS",
+        "checks": [
+          {
+            "status": "PASS",
+            "name": "Ketebalan",
+            "value": 10.02
+          },
+          {
+            "name": "Kekerasan",
+            "value": 135,
+            "status": "PASS"
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "salt": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+          "hmac": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+          "cid": "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+        }
+      ],
+      "canonicalizationVersion": 1,
+      "batchRef": "ST-2026-001",
+      "approvedAt": "2026-10-10T10:00:00.000Z"
+    },
+    "expectedCanonicalJson": "{\"approvedAt\":\"2026-10-10T10:00:00.000Z\",\"batchRef\":\"ST-2026-001\",\"canonicalizationVersion\":1,\"evidence\":[{\"cid\":\"bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi\",\"hmac\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"salt\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90\"}],\"inspection\":{\"checks\":[{\"name\":\"Ketebalan\",\"status\":\"PASS\",\"value\":10.02},{\"name\":\"Kekerasan\",\"status\":\"PASS\",\"value\":135}],\"result\":\"PASS\"},\"material\":\"Pelat baja SS400\",\"proofId\":\"PANDU-QP-2026-000001\",\"salt\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"supplier\":\"PT Baja Nusantara\"}",
+    "expectedEvidenceHash": "0x313044b8af7411abf9db686f3f6f1db68df533781c00af7e4e387ea1431515a1"
+  }
+]

@@ -1512,3 +1512,5 @@ html[data-theme='light'] .p-workspace .p-rail-submenu { background:#fffaf6;color
  .p-workspace .p-work-section { overflow-x:auto;padding:15px; }
 }
 @media(max-width:767px){.p-workspace .p-sidebar,.p-workspace.is-rail-expanded .p-sidebar{transform:none!important}.p-workspace .p-work-top>.p-menu-button{display:none!important}}
+.p-workspace .p-work-content .p-settings-card,.p-workspace .p-work-content .p-guide-callout,.p-workspace .p-work-content .p-profile-wallet{background:var(--p-glass);border:1px solid var(--p-line);border-radius:22px;box-shadow:var(--p-shadow-sm);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+@media(max-width:767px){.p-workspace .p-rail-item.is-mobile-open .p-rail-submenu{position:fixed;left:8px;right:8px;bottom:78px;top:auto;width:auto;max-height:60vh;overflow:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;padding:10px;background:var(--p-glass);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}}

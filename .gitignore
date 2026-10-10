@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+**/.env
+backend/data/
+frontend/.env.local
+client_secret_*.apps.googleusercontent.com.json
+smart-contract/out/
+smart-contract/cache/
+smart-contract/broadcast/
+.agents/
+.mcp.json
+trash/
+.temp/
+**/.temp/
+*.tsbuildinfo

@@ -12,7 +12,7 @@ function tokenDigest(value) {
 }
 
 /** Public proof routes return identifiers and minimum chain metadata, never business snapshots. */
-export function createPublicProofRouter({ supabaseAdmin, tokenSecret, legacyRegistryAddress = null, proofIdBytes }) {
+export function createPublicProofRouter({ supabaseAdmin, tokenSecret, legacyRegistryAddress = null, proofIdBytes, readChainMetadata = async () => null }) {
   const router = express.Router();
 
   router.get('/resolve', async (req, res) => {
@@ -59,7 +59,10 @@ export function createPublicProofRouter({ supabaseAdmin, tokenSecret, legacyRegi
       if (error) throw error;
       if (!proof) return res.status(404).json({ status: 'NOT_FOUND', message: 'Bukti PANDU tidak ditemukan.' });
       const legacy = Boolean(legacyRegistryAddress) && getAddress(proof.contract_address) === legacyRegistryAddress;
-      return res.json(publicProofMetadata(proof, { proofId: proofIdBytes(proof.public_id), legacy }));
+      const proofId = proofIdBytes(proof.public_id);
+      let onchain = null;
+      try { onchain = await readChainMetadata(proof, proofId, legacy); } catch { /* metadata is optional; the browser performs its own chain check */ }
+      return res.json(publicProofMetadata(proof, { proofId, legacy, onchain }));
     } catch {
       return res.status(503).json({ status: 'UNAVAILABLE', message: 'Metadata verifikasi belum tersedia. Coba lagi.' });
     }

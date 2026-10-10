@@ -26,6 +26,7 @@ test('public proof route returns minimum metadata and never serializes a busines
   app.use('/api/public', createPublicProofRouter({
     supabaseAdmin, tokenSecret: 'test-only-secret-value-with-more-than-32-bytes',
     legacyRegistryAddress: null, proofIdBytes: () => `0x${'11'.repeat(32)}`,
+    readChainMetadata: async () => ({ attester: '0x0000000000000000000000000000000000000002', timestamp: 12345n, revoked: false }),
   }));
   const server = createServer(app);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -40,6 +41,8 @@ test('public proof route returns minimum metadata and never serializes a busines
   ].sort());
   assert.equal(body.status, 'ANCHORED');
   assert.equal(body.transactionHash, '0xtx');
+  assert.equal(body.attester, '0x0000000000000000000000000000000000000002');
+  assert.equal(body.anchoredAt, 12345);
   assert.equal(JSON.stringify(body).includes('fixture supplier'), false);
   assert.equal(JSON.stringify(body).includes('fixture measurement'), false);
 });

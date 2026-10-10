@@ -308,6 +308,14 @@ app.use('/api/public', createPublicProofRouter({
   tokenSecret: runtimeConfig.PUBLIC_TOKEN_SECRET,
   legacyRegistryAddress,
   proofIdBytes,
+  readChainMetadata: async (proof, proofId, legacy) => {
+    const readAbi = legacy
+      ? ['function getProof(bytes32) view returns ((bytes32 proofId,bytes32 batchRef,bytes32 evidenceHash,address attester,uint64 timestamp,bool revoked,address revoker,uint64 revokedAt))']
+      : ['function getProof(bytes32) view returns ((bytes32 proofId,bytes32 batchRef,bytes32 evidenceHash,address attester,address relayer,uint64 timestamp,bool revoked,address revoker,uint64 revokedAt,bytes32 revokeReason))'];
+    const registry = new Contract(getAddress(proof.contract_address), readAbi, getProviderForChain(proof.chain_id));
+    const record = await registry.getProof(proofId);
+    return { attester: record.attester, timestamp: record.timestamp, revoked: record.revoked };
+  },
 }));
 
 const requireSupabaseUser = createRequireSupabaseUser(supabaseAdmin);

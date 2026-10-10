@@ -1,5 +1,5 @@
 /** Project a database row onto fields needed for the browser's read-only chain check. */
-export function publicProofMetadata(proof, { proofId, legacy }) {
+export function publicProofMetadata(proof, { proofId, legacy, onchain = null }) {
   const commitment = typeof proof.commitment === 'string'
     ? proof.commitment.replace(/^\\x/, '').replace(/^0x/, '')
     : Buffer.from(proof.commitment).toString('hex');
@@ -10,9 +10,9 @@ export function publicProofMetadata(proof, { proofId, legacy }) {
     contractAddress: proof.contract_address,
     legacy: Boolean(legacy),
     commitment: `0x${commitment}`,
-    attester: null,
-    anchoredAt: null,
-    revoked: proof.anchor_status === 'revoked',
+    attester: onchain?.attester ? String(onchain.attester) : null,
+    anchoredAt: onchain?.timestamp === undefined ? null : Number(onchain.timestamp),
+    revoked: onchain?.revoked === undefined ? proof.anchor_status === 'revoked' : Boolean(onchain.revoked),
     transactionHash: proof.transaction_hash,
   };
 }

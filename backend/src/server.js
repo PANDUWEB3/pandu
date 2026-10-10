@@ -12,6 +12,7 @@ import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { assertProductionEnv, parseTrustProxy } from './env-guard.js';
 import { createCiphertextRouter, createPinataCiphertextStorage } from './ciphertext-router.js';
+import { registerDemoRoutes } from './demo-route-guard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -783,6 +784,7 @@ app.get('/api/public/proofs/:token', async (req, res) => {
   } catch (error) { res.status(503).json({ status: 'UNAVAILABLE', message: 'Jaringan belum dapat memeriksa bukti. Coba lagi.', detail: error.shortMessage || error.message }); }
 });
 
+registerDemoRoutes(process.env, () => {
 app.get('/api/demo', (_req, res) => res.json(summarize()));
 app.post('/api/reset', async (_req, res) => {
   const proofCounter = state.proofCounter || 0;
@@ -974,8 +976,9 @@ app.get('/api/verify/:proofId', async (req, res) => {
   const result = await verifyProof(req.params.proofId);
   res.status(result.status === 'UNAVAILABLE' ? 503 : 200).json(result);
 });
+});
 
 app.use((error, _req, res, _next) => res.status(400).json({ error: error.message || 'Permintaan tidak valid.' }));
 await mkdir(path.dirname(dataFile), { recursive: true });
 await loadState();
-app.listen(port, '127.0.0.1', () => console.log(`PANDU API listening on http://localhost:${port}`));
+app.listen(port, '127.0.0.1', () => console.log(`PANDU API listening on http://127.0.0.1:${port}`));

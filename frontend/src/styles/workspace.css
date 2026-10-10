@@ -1517,3 +1517,9 @@ html[data-theme='light'] .p-workspace .p-rail-submenu { background:#fffaf6;color
 .p-workspace .p-sidebar:not(.is-expanded) .p-sidebar-brand .p-brand{display:none!important}
 .p-workspace .ws-notif{display:block!important}
 @media(max-width:767px){.p-workspace .p-rail-item.is-mobile-open .p-rail-submenu{display:grid!important}}
+/* Keep the category rail fixed to the viewport; its spacing is independent of page scroll. */
+.p-workspace .p-sidebar{top:12px;bottom:12px;padding:12px 7px;gap:10px}
+.p-workspace .p-sidebar-brand{display:none!important}
+.p-workspace .p-nav-scroll{justify-content:space-evenly;padding:8px 0}
+.p-workspace .p-top-brand .p-brand,.p-workspace .p-top-brand .p-brand *{text-decoration:none!important}
+@media(max-width:767px){.p-workspace .p-sidebar{top:auto;bottom:8px;padding:6px 8px;gap:0}.p-workspace .p-nav-scroll{padding:0;justify-content:space-around}}
